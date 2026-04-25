@@ -48,6 +48,14 @@ struct Config
     bool llmAnnotateCallstacks = false;
     bool llmLimitToolReplySize = false;
     int llmMaxToolReplySizeValue = 48*1024;
+
+    // Local Node MCP server for the trace integrator (port via TRACY_MCP_HTTP_PORT)
+    bool llmIntegratorMcpEnabled = false;
+    int llmIntegratorMcpPort = 37512;
+    std::string llmIntegratorNode = "node";
+    std::string llmIntegratorScript;
+    std::string llmIntegratorTracyRoot;
+    std::string llmIntegratorBridge;
 };
 
 extern Config s_config;

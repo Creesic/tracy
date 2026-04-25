@@ -1174,6 +1174,7 @@ bool View::DrawImpl()
     if( m_showWaitStacks ) DrawWaitStacks();
     if( m_showManual ) DrawManual();
 #ifndef __EMSCRIPTEN__
+    m_llm.TickIntegratorMcpIfEnabled();
     if( m_llm.m_show ) m_llm.Draw();
 #endif
 

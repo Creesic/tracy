@@ -50,6 +50,8 @@ public:
     [[nodiscard]] bool IsBusy() const { std::lock_guard lock( m_jobsLock ); return m_busy; }
 
     void Draw();
+    /** Call each frame (e.g. from View) so integrator child process is reaped and start/stop stays in sync. */
+    void TickIntegratorMcpIfEnabled() { UpdateIntegratorMcpProcess(); }
 
     bool m_show = false;
 
@@ -70,6 +72,11 @@ private:
     void UpdateSystemPrompt();
 
     void QueueConnect();
+
+    void SyncIntegratorFieldsFromConfig();
+    void UpdateIntegratorMcpProcess();
+    void StopIntegratorMcpProcess();
+    bool StartIntegratorMcpProcess();
 
     // Will block, cannot enter with a taken lock
     void AddMessageBlocking( std::string&& str, const char* role );
@@ -115,6 +122,23 @@ private:
     nlohmann::json m_toolsJson;
 
     Worker& m_worker;
+
+    static constexpr size_t IntegratorPathBuf = 2048;
+    char m_integratorNode[256] = {};
+    char m_integratorScript[IntegratorPathBuf] = {};
+    char m_integratorTracyRoot[IntegratorPathBuf] = {};
+    char m_integratorBridge[IntegratorPathBuf] = {};
+    char m_integratorStatus[512] = {};
+    char m_integratorScriptUsed[IntegratorPathBuf] = {};
+
+    bool m_integratorMcpRunning = false;
+#ifdef _WIN32
+    uint64_t m_integratorProcessHandle = 0;
+#else
+    int m_integratorChildPid = -1;
+#endif
+    bool m_integratorNeedStart = false;
+    bool m_integratorDidBootstrap = false;
 };
 
 }

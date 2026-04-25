@@ -1,10 +1,25 @@
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <vector>
 #include <curl/curl.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#if defined( __APPLE__ )
+#include <mach-o/dyld.h>
+#endif
+#endif
 
 #include "TracyConfig.hpp"
+#include "TracyFilesystem.hpp"
 #include "TracyImGui.hpp"
 #include "TracyLlm.hpp"
 #include "TracyLlmApi.hpp"
@@ -22,6 +37,121 @@
 namespace tracy
 {
 
+namespace
+{
+
+std::string ParentPath( std::string p )
+{
+    while( !p.empty() && ( p.back() == '/' || p.back() == '\\' ) ) p.pop_back();
+    const auto pos = p.find_last_of( "/\\" );
+    if( pos == std::string::npos ) return {};
+    return p.substr( 0, pos );
+}
+
+std::string GetExecutablePath()
+{
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA( NULL, buf, MAX_PATH );
+    if( n == 0 || n >= MAX_PATH ) return {};
+    return std::string( buf, buf + n );
+#elif defined( __APPLE__ )
+    char buf[4096];
+    uint32_t size = sizeof( buf );
+    if( _NSGetExecutablePath( buf, &size ) != 0 ) return {};
+    return buf;
+#else
+    char buf[4096];
+    const ssize_t n = readlink( "/proc/self/exe", buf, sizeof( buf ) - 1 );
+    if( n <= 0 ) return {};
+    buf[n] = '\0';
+    return buf;
+#endif
+}
+
+std::string JoinUnder( const std::string& root, const char* rel )
+{
+    if( root.empty() ) return rel;
+    std::string r = root;
+    while( !r.empty() && ( r.back() == '/' || r.back() == '\\' ) ) r.pop_back();
+    return r + "/" + rel;
+}
+
+std::string RepoFromStandardIntegratorJs( const std::string& script )
+{
+    static const char kTail[] = "mcp/integrator/dist/index.js";
+    static const char kTailWin[] = "mcp\\integrator\\dist\\index.js";
+    const size_t n1 = sizeof( kTail ) - 1;
+    const size_t n2 = sizeof( kTailWin ) - 1;
+    if( script.size() >= n1 && script.compare( script.size() - n1, n1, kTail, n1 ) == 0 )
+        return ParentPath( script.substr( 0, script.size() - n1 ) );
+    if( script.size() >= n2 && script.compare( script.size() - n2, n2, kTailWin, n2 ) == 0 )
+        return ParentPath( script.substr( 0, script.size() - n2 ) );
+    return {};
+}
+
+bool ResolveIntegratorPaths( std::string& outScript, std::string& outRepo, char* err, size_t errLen )
+{
+    if( !s_config.llmIntegratorScript.empty() )
+    {
+        outScript = s_config.llmIntegratorScript;
+        if( !FileExists( outScript.c_str() ) )
+        {
+            snprintf( err, errLen, "Integrator script not found:\n%s", outScript.c_str() );
+            return false;
+        }
+        if( !s_config.llmIntegratorTracyRoot.empty() )
+        {
+            outRepo = s_config.llmIntegratorTracyRoot;
+        }
+        else
+        {
+            outRepo = RepoFromStandardIntegratorJs( outScript );
+        }
+        while( !outRepo.empty() && ( outRepo.back() == '/' || outRepo.back() == '\\' ) ) outRepo.pop_back();
+        return true;
+    }
+
+    if( !s_config.llmIntegratorTracyRoot.empty() )
+    {
+        outRepo = s_config.llmIntegratorTracyRoot;
+        while( !outRepo.empty() && ( outRepo.back() == '/' || outRepo.back() == '\\' ) ) outRepo.pop_back();
+        outScript = JoinUnder( outRepo, "mcp/integrator/dist/index.js" );
+        if( !FileExists( outScript.c_str() ) )
+        {
+            snprintf( err, errLen, "Built integrator not found (run npm run build in mcp/integrator):\n%s", outScript.c_str() );
+            return false;
+        }
+        return true;
+    }
+
+    const std::string exe = GetExecutablePath();
+    if( exe.empty() )
+    {
+        snprintf( err, errLen, "Could not locate the profiler executable path; set \"Tracy root\" under Advanced." );
+        return false;
+    }
+
+    std::string walk = ParentPath( exe );
+    for( int i = 0; i < 24 && !walk.empty(); ++i )
+    {
+        outScript = JoinUnder( walk, "mcp/integrator/dist/index.js" );
+        if( FileExists( outScript.c_str() ) )
+        {
+            outRepo = walk;
+            return true;
+        }
+        const std::string next = ParentPath( walk );
+        if( next == walk ) break;
+        walk = next;
+    }
+
+    snprintf( err, errLen, "Could not find mcp/integrator/dist/index.js next to this profiler. Build it (npm run build in mcp/integrator) or set \"Tracy root\" under Advanced." );
+    return false;
+}
+
+}
+
 extern double s_time;
 
 constexpr size_t InputBufferSize = 1024;
@@ -32,6 +162,7 @@ TracyLlm::TracyLlm( Worker& worker, View& view, const TracyManualData& manual )
     , m_apiInput( nullptr )
     , m_worker( worker )
 {
+    SyncIntegratorFieldsFromConfig();
     if( !s_config.llm ) return;
 
     static bool initialized = false;
@@ -61,6 +192,8 @@ TracyLlm::TracyLlm( Worker& worker, View& view, const TracyManualData& manual )
 
 TracyLlm::~TracyLlm()
 {
+    StopIntegratorMcpProcess();
+
     delete[] m_input;
     delete[] m_apiInput;
 
@@ -408,6 +541,148 @@ void TracyLlm::Draw()
             }
             ImGui::SameLine();
             if( ImGui::Button( ICON_FA_HOUSE "##bravekey" ) ) OpenWebpage( "https://brave.com/search/api/" );
+
+            ImGui::TreePop();
+        }
+
+        if( ImGui::TreeNode( ICON_FA_NETWORK_WIRED " Integrator MCP" ) )
+        {
+            ImGui::TextUnformatted( "Runs a local Node server for MCP clients. Requires Node.js and a built integrator (npm run build in mcp/integrator)." );
+            ImGui::Spacing();
+
+            if( ImGui::Checkbox( "Enable MCP server", &s_config.llmIntegratorMcpEnabled ) )
+            {
+                SaveConfig();
+                if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+                else
+                {
+                    m_integratorNeedStart = false;
+                    StopIntegratorMcpProcess();
+                }
+            }
+
+            ImGui::SetNextItemWidth( 90 * scale );
+            if( ImGui::InputInt( "Port##intmcp", &s_config.llmIntegratorMcpPort ) )
+            {
+                if( s_config.llmIntegratorMcpPort < 1 ) s_config.llmIntegratorMcpPort = 1;
+                if( s_config.llmIntegratorMcpPort > 65535 ) s_config.llmIntegratorMcpPort = 65535;
+                SaveConfig();
+                if( s_config.llmIntegratorMcpEnabled )
+                {
+                    StopIntegratorMcpProcess();
+                    m_integratorNeedStart = true;
+                }
+            }
+
+            char mcpUrl[128];
+            snprintf( mcpUrl, sizeof( mcpUrl ), "http://127.0.0.1:%d/mcp", s_config.llmIntegratorMcpPort );
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted( "MCP URL:" );
+            ImGui::SameLine();
+            ImGui::TextUnformatted( mcpUrl );
+            ImGui::SameLine();
+            if( ImGui::SmallButton( ICON_FA_COPY "##copymcpurl" ) ) ImGui::SetClipboardText( mcpUrl );
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if( m_integratorMcpRunning )
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, ImVec4( 0.25f, 0.88f, 0.4f, 1.f ) );
+                ImGui::Text( "%s Server running", ICON_FA_CIRCLE_CHECK );
+                ImGui::PopStyleColor();
+            }
+            else if( !s_config.llmIntegratorMcpEnabled )
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, ImVec4( 0.5f, 0.52f, 0.58f, 1.f ) );
+                ImGui::Text( "%s Server off", ICON_FA_CIRCLE );
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, ImVec4( 0.95f, 0.45f, 0.3f, 1.f ) );
+                ImGui::Text( "%s Server not running", ICON_FA_TRIANGLE_EXCLAMATION );
+                ImGui::PopStyleColor();
+            }
+
+            if( m_integratorScriptUsed[0] != '\0' )
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, ImGui::GetStyleColorVec4( ImGuiCol_TextDisabled ) );
+                ImGui::TextWrapped( "Script: %s", m_integratorScriptUsed );
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::TextWrapped( "%s", m_integratorStatus );
+
+            if( s_config.llmIntegratorMcpEnabled && !m_integratorMcpRunning && ImGui::SmallButton( "Retry start" ) ) m_integratorNeedStart = true;
+
+            if( ImGui::TreeNode( "Advanced (paths)" ) )
+            {
+                SyncIntegratorFieldsFromConfig();
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted( "Node executable:" );
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth( ImGui::GetContentRegionAvail().x );
+                if( ImGui::InputTextWithHint( "##intmcpnode", "node (search PATH) or full path", m_integratorNode, sizeof( m_integratorNode ) ) )
+                {
+                    s_config.llmIntegratorNode = m_integratorNode;
+                    SaveConfig();
+                    if( s_config.llmIntegratorMcpEnabled )
+                    {
+                        StopIntegratorMcpProcess();
+                        m_integratorNeedStart = true;
+                    }
+                }
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted( "Integrator script (optional if TRACY_ROOT set):" );
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth( ImGui::GetContentRegionAvail().x );
+                if( ImGui::InputTextWithHint( "##intmcpscript", "…/mcp/integrator/dist/index.js", m_integratorScript, sizeof( m_integratorScript ) ) )
+                {
+                    s_config.llmIntegratorScript = m_integratorScript;
+                    SaveConfig();
+                    if( s_config.llmIntegratorMcpEnabled )
+                    {
+                        StopIntegratorMcpProcess();
+                        m_integratorNeedStart = true;
+                    }
+                }
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted( "TRACY_ROOT (repo clone):" );
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth( ImGui::GetContentRegionAvail().x );
+                if( ImGui::InputTextWithHint( "##intmcproot", "Used for default script + bridge detection", m_integratorTracyRoot, sizeof( m_integratorTracyRoot ) ) )
+                {
+                    s_config.llmIntegratorTracyRoot = m_integratorTracyRoot;
+                    SaveConfig();
+                    if( s_config.llmIntegratorMcpEnabled )
+                    {
+                        StopIntegratorMcpProcess();
+                        m_integratorNeedStart = true;
+                    }
+                }
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted( "TRACY_MCP_BRIDGE (optional):" );
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth( ImGui::GetContentRegionAvail().x );
+                if( ImGui::InputTextWithHint( "##intmcpbridge", "tracy-mcp-bridge executable", m_integratorBridge, sizeof( m_integratorBridge ) ) )
+                {
+                    s_config.llmIntegratorBridge = m_integratorBridge;
+                    SaveConfig();
+                    if( s_config.llmIntegratorMcpEnabled )
+                    {
+                        StopIntegratorMcpProcess();
+                        m_integratorNeedStart = true;
+                    }
+                }
+
+                ImGui::TreePop();
+            }
 
             ImGui::TreePop();
         }
@@ -1302,6 +1577,209 @@ bool TracyLlm::OnResponse( const nlohmann::json& json )
     }
 
     return true;
+}
+
+void TracyLlm::SyncIntegratorFieldsFromConfig()
+{
+    auto clampCopy = []( char* dst, size_t dstSize, const std::string& src ) {
+        const size_t n = src.size() < dstSize - 1 ? src.size() : dstSize - 1;
+        memcpy( dst, src.c_str(), n );
+        dst[n] = '\0';
+    };
+    clampCopy( m_integratorNode, sizeof( m_integratorNode ), s_config.llmIntegratorNode );
+    clampCopy( m_integratorScript, sizeof( m_integratorScript ), s_config.llmIntegratorScript );
+    clampCopy( m_integratorTracyRoot, sizeof( m_integratorTracyRoot ), s_config.llmIntegratorTracyRoot );
+    clampCopy( m_integratorBridge, sizeof( m_integratorBridge ), s_config.llmIntegratorBridge );
+}
+
+void TracyLlm::StopIntegratorMcpProcess()
+{
+#ifdef _WIN32
+    if( m_integratorProcessHandle )
+    {
+        HANDLE h = (HANDLE)(uintptr_t)m_integratorProcessHandle;
+        TerminateProcess( h, 1 );
+        CloseHandle( h );
+        m_integratorProcessHandle = 0;
+    }
+#else
+    if( m_integratorChildPid > 0 )
+    {
+        kill( m_integratorChildPid, SIGTERM );
+        int st = 0;
+        waitpid( m_integratorChildPid, &st, 0 );
+        m_integratorChildPid = -1;
+    }
+#endif
+    m_integratorMcpRunning = false;
+    m_integratorScriptUsed[0] = '\0';
+    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Stopped." );
+}
+
+bool TracyLlm::StartIntegratorMcpProcess()
+{
+    if( m_integratorMcpRunning ) return true;
+
+    std::string script;
+    std::string repoResolved;
+    char resolveErr[512];
+    if( !ResolveIntegratorPaths( script, repoResolved, resolveErr, sizeof( resolveErr ) ) )
+    {
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "%s", resolveErr );
+        m_integratorScriptUsed[0] = '\0';
+        return false;
+    }
+
+    {
+        const size_t n = script.size() < sizeof( m_integratorScriptUsed ) - 1 ? script.size() : sizeof( m_integratorScriptUsed ) - 1;
+        memcpy( m_integratorScriptUsed, script.c_str(), n );
+        m_integratorScriptUsed[n] = '\0';
+    }
+
+    std::string tracyRoot = s_config.llmIntegratorTracyRoot;
+    while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
+    if( tracyRoot.empty() ) tracyRoot = repoResolved;
+    while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
+
+    const std::string portStr = std::to_string( s_config.llmIntegratorMcpPort );
+
+#ifdef _WIN32
+    char nodeExe[MAX_PATH];
+    const std::string& nodeCfg = s_config.llmIntegratorNode;
+    if( nodeCfg.empty() || nodeCfg == "node" )
+    {
+        if( !SearchPathA( NULL, "node.exe", NULL, (DWORD)sizeof( nodeExe ), nodeExe, NULL ) )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "node.exe not on PATH. Install Node.js or set \"Node executable\" in Advanced." );
+            return false;
+        }
+    }
+    else
+    {
+        strncpy( nodeExe, nodeCfg.c_str(), sizeof( nodeExe ) - 1 );
+        nodeExe[sizeof( nodeExe ) - 1] = '\0';
+    }
+
+    _putenv_s( "TRACY_MCP_HTTP_PORT", portStr.c_str() );
+    if( !tracyRoot.empty() ) _putenv_s( "TRACY_ROOT", tracyRoot.c_str() );
+    if( !s_config.llmIntegratorBridge.empty() ) _putenv_s( "TRACY_MCP_BRIDGE", s_config.llmIntegratorBridge.c_str() );
+
+    std::string cmdLine = std::string( "\"" ) + nodeExe + "\" \"" + script + "\"";
+    std::vector<char> cmdBuf( cmdLine.begin(), cmdLine.end() );
+    cmdBuf.push_back( '\0' );
+
+    STARTUPINFOA si = {};
+    si.cb = sizeof( si );
+    PROCESS_INFORMATION pi = {};
+
+    const char* cwd = tracyRoot.empty() ? NULL : tracyRoot.c_str();
+    if( !CreateProcessA( nodeExe, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, cwd, &si, &pi ) )
+    {
+        const DWORD err = GetLastError();
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "CreateProcess failed (error %lu). Check Node and script paths.", (unsigned long)err );
+        return false;
+    }
+
+    CloseHandle( pi.hThread );
+    m_integratorProcessHandle = (uint64_t)(uintptr_t)pi.hProcess;
+    m_integratorMcpRunning = true;
+    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "PID %lu — http://127.0.0.1:%d/mcp", (unsigned long)pi.dwProcessId, s_config.llmIntegratorMcpPort );
+    return true;
+#else
+    if( setenv( "TRACY_MCP_HTTP_PORT", portStr.c_str(), 1 ) != 0 )
+    {
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_MCP_HTTP_PORT failed." );
+        return false;
+    }
+    if( !tracyRoot.empty() )
+    {
+        if( setenv( "TRACY_ROOT", tracyRoot.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_ROOT failed." );
+            return false;
+        }
+    }
+    if( !s_config.llmIntegratorBridge.empty() )
+    {
+        if( setenv( "TRACY_MCP_BRIDGE", s_config.llmIntegratorBridge.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_MCP_BRIDGE failed." );
+            return false;
+        }
+    }
+
+    const std::string nodeArgStr = s_config.llmIntegratorNode.empty() ? std::string( "node" ) : s_config.llmIntegratorNode;
+    const pid_t pid = fork();
+    if( pid < 0 )
+    {
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "fork() failed." );
+        return false;
+    }
+    if( pid == 0 )
+    {
+        if( !tracyRoot.empty() ) chdir( tracyRoot.c_str() );
+        execlp( nodeArgStr.c_str(), nodeArgStr.c_str(), script.c_str(), (char*)nullptr );
+        _exit( 127 );
+    }
+
+    m_integratorChildPid = pid;
+    m_integratorMcpRunning = true;
+    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "PID %d — http://127.0.0.1:%d/mcp", (int)pid, s_config.llmIntegratorMcpPort );
+    return true;
+#endif
+}
+
+void TracyLlm::UpdateIntegratorMcpProcess()
+{
+    if( !m_integratorDidBootstrap )
+    {
+        m_integratorDidBootstrap = true;
+        if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+    }
+
+#ifdef _WIN32
+    if( m_integratorProcessHandle )
+    {
+        HANDLE h = (HANDLE)(uintptr_t)m_integratorProcessHandle;
+        if( WaitForSingleObject( h, 0 ) == WAIT_OBJECT_0 )
+        {
+            DWORD code = 1;
+            GetExitCodeProcess( h, &code );
+            CloseHandle( h );
+            m_integratorProcessHandle = 0;
+            m_integratorMcpRunning = false;
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (code %lu).", (unsigned long)code );
+            if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+        }
+    }
+#else
+    if( m_integratorChildPid > 0 )
+    {
+        int st = 0;
+        const pid_t r = waitpid( m_integratorChildPid, &st, WNOHANG );
+        if( r == m_integratorChildPid )
+        {
+            m_integratorChildPid = -1;
+            m_integratorMcpRunning = false;
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (status %d).", st );
+            if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+        }
+        else if( r < 0 )
+        {
+            m_integratorChildPid = -1;
+            m_integratorMcpRunning = false;
+        }
+    }
+#endif
+
+    const bool want = s_config.llmIntegratorMcpEnabled;
+    if( !want && m_integratorMcpRunning ) StopIntegratorMcpProcess();
+
+    if( want && m_integratorNeedStart && !m_integratorMcpRunning )
+    {
+        m_integratorNeedStart = false;
+        if( !StartIntegratorMcpProcess() ) m_integratorNeedStart = false;
+    }
 }
 
 }

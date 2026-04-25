@@ -2367,43 +2367,56 @@ const uint64_t* Worker::GetInlineSymbolList( uint64_t sym, uint32_t len )
 int64_t Worker::GetZoneEndImpl( const ZoneEvent& ev ) const
 {
     assert( !ev.IsEndValid() );
-    auto ptr = &ev;
-    for(;;)
+    const ZoneEvent* ptr = &ev;
+    // Guard against corrupt traces: invalid child indices, empty child vectors, or cyclic/deep trees.
+    for( int iter = 0; iter < 1000000; ++iter )
     {
         if( !ptr->HasChildren() ) return ptr->Start();
-        auto& children = GetZoneChildren( ptr->Child() );
+        const int32_t cidx = ptr->Child();
+        if( cidx < 0 || size_t( cidx ) >= m_data.zoneChildren.size() ) return ptr->Start();
+        auto& children = GetZoneChildren( cidx );
+        if( children.empty() ) return ptr->Start();
         if( children.is_magic() )
         {
             auto& c = *(Vector<ZoneEvent>*)&children;
+            if( c.empty() ) return ptr->Start();
             ptr = &c.back();
         }
         else
         {
             ptr = children.back();
         }
+        if( !ptr ) return ev.Start();
         if( ptr->IsEndValid() ) return ptr->End();
     }
+    return ev.Start();
 }
 
 int64_t Worker::GetZoneEndImpl( const GpuEvent& ev ) const
 {
     assert( ev.GpuEnd() < 0 );
-    auto ptr = &ev;
-    for(;;)
+    const GpuEvent* ptr = &ev;
+    for( int iter = 0; iter < 1000000; ++iter )
     {
         if( ptr->Child() < 0 ) return ptr->GpuStart() >= 0 ? ptr->GpuStart() : m_data.lastTime;
-        auto& children = GetGpuChildren( ptr->Child() );
+        const int32_t cidx = ptr->Child();
+        if( cidx < 0 || size_t( cidx ) >= m_data.gpuChildren.size() ) return ptr->GpuStart() >= 0 ? ptr->GpuStart() : m_data.lastTime;
+        auto& children = GetGpuChildren( cidx );
+        if( children.empty() ) return ptr->GpuStart() >= 0 ? ptr->GpuStart() : m_data.lastTime;
         if( children.is_magic() )
         {
             auto& c = *(Vector<GpuEvent>*)&children;
+            if( c.empty() ) return ptr->GpuStart() >= 0 ? ptr->GpuStart() : m_data.lastTime;
             ptr = &c.back();
         }
         else
         {
             ptr = children.back();
         }
+        if( !ptr ) return ev.GpuStart() >= 0 ? ev.GpuStart() : m_data.lastTime;
         if( ptr->GpuEnd() >= 0 ) return ptr->GpuEnd();
     }
+    return ptr->GpuStart() >= 0 ? ptr->GpuStart() : m_data.lastTime;
 }
 
 uint32_t Worker::FindStringIdx( const char* str ) const
@@ -2533,6 +2546,19 @@ const SourceLocation& Worker::GetSourceLocation( int16_t srcloc ) const
         static const SourceLocation emptySourceLoc = {};
         return emptySourceLoc;
     }
+}
+
+bool Worker::IsSourceLocationIdValid( int16_t srcloc ) const noexcept
+{
+    if( srcloc == std::numeric_limits<int16_t>::max() ) return true;
+    if( srcloc < 0 )
+    {
+        const int32_t idx = -int32_t( srcloc ) - 1;
+        if( idx < 0 ) return false;
+        return size_t( idx ) < m_data.sourceLocationPayload.size();
+    }
+    if( size_t( srcloc ) >= m_data.sourceLocationExpand.size() ) return false;
+    return m_data.sourceLocation.find( m_data.sourceLocationExpand[srcloc] ) != m_data.sourceLocation.end();
 }
 
 std::pair<const char*, const char*> Worker::GetExternalName( uint64_t id ) const

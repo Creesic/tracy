@@ -613,6 +613,8 @@ public:
     bool IsThreadLocal( uint64_t id, ThreadCache& cache );
     bool IsThreadFiber( uint64_t id );
     const SourceLocation& GetSourceLocation( int16_t srcloc ) const;
+    /** Bounds-check before calling GetSourceLocation (avoids UB on corrupt or unexpected srcloc values). */
+    [[nodiscard]] bool IsSourceLocationIdValid( int16_t srcloc ) const noexcept;
     std::pair<const char*, const char*> GetExternalName( uint64_t id ) const;
 
     const char* GetZoneName( const SourceLocation& srcloc ) const;
