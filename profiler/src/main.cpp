@@ -39,7 +39,7 @@
 #include "profiler/TracyTexture.hpp"
 #include "profiler/TracyView.hpp"
 #include "profiler/TracyWeb.hpp"
-#include "profiler/IconsFontAwesome6.h"
+#include "profiler/IconsFontAwesome7.h"
 #include "../../server/tracy_pdqsort.h"
 #include "../../server/tracy_robin_hood.h"
 #include "../../server/TracyFileHeader.hpp"
@@ -124,6 +124,8 @@ tracy::AchievementsMgr* s_achievements;
 static const tracy::data::AchievementItem* s_achievementItem = nullptr;
 static bool s_switchAchievementCategory = false;
 
+ImTextureID GetProfilerIconTexture() { return iconTex; }
+
 static float smoothstep( float x )
 {
     return x * x * ( 3.0f - 2.0f * x );
@@ -175,8 +177,8 @@ static void SetupDPIScale()
     auto& style = ImGui::GetStyle();
     style = ImGuiStyle();
     ImGui::StyleColorsDark();
-    style.WindowBorderSize = 1.f * scale;
-    style.FrameBorderSize = 1.f * scale;
+    style.WindowBorderSize = 1.f;
+    style.FrameBorderSize = 1.f;
     style.FrameRounding = 5.f;
     style.Colors[ImGuiCol_ScrollbarBg] = ImVec4( 1, 1, 1, 0.03f );
     style.Colors[ImGuiCol_Header] = ImVec4(0.26f, 0.59f, 0.98f, 0.25f);
@@ -196,6 +198,9 @@ static void SetupDPIScale()
     prevScale = scale;
     auto ctx = ImGui::GetCurrentContext();
     for( auto& w : ctx->Windows ) ScaleWindow( w, ratio );
+
+    auto viewPtr = view.load( std::memory_order_acquire );
+    if( viewPtr ) viewPtr->DpiScaleChanged();
 }
 
 static int IsBusy()
@@ -359,7 +364,7 @@ int main( int argc, char** argv )
         view.store( std::make_shared<tracy::View>( RunOnMainThread, connectTo, port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
     }
 
-    tracy::Fileselector::Init();
+    tracy::Fileselector::Init( backend.HandleType(), backend.Handle() );
     s_isElevated = IsElevated();
 
     backend.Show();
@@ -764,7 +769,11 @@ static void DrawContents()
                 tracy::OpenWebpage( "https://github.com/wolfpld/tracy" );
             }
             ImGui::Separator();
-            if( ImGui::Selectable( ICON_FA_VIDEO " An Introduction to Tracy Profiler in C++ - Marcos Slomp - CppCon 2023" ) )
+            if( ImGui::Selectable( ICON_FA_VIDEO " Performance profiling Mutter, GNOME Shell & apps with Tracy – Ivan Molodetskikh – GUADEC 2026" ) )
+            {
+                tracy::OpenWebpage( "https://youtu.be/Q4O7dhreLDU?t=21080" );
+            }
+            if( ImGui::Selectable( ICON_FA_VIDEO " An Introduction to Tracy Profiler in C++ – Marcos Slomp – CppCon 2023" ) )
             {
                 tracy::OpenWebpage( "https://youtu.be/ghXk3Bk5F2U?t=37" );
             }
@@ -1381,7 +1390,7 @@ Would you like to enable achievements?
         if( ( animStage == 0 || animStage == 2 ) && ImGui::IsMouseHoveringRect( cursorScreen - ImVec2( dpiScale * 2, dpiScale * 2 ), cursorScreen + starSize + ImVec2( dpiScale * 4, dpiScale * 4 ) ) )
         {
             color = 0xFFFFFFFF;
-            if( ImGui::IsMouseClicked( 0 ) )
+            if( ImGui::IsMouseClicked( ImGuiMouseButton_Left ) )
             {
                 if( animStage == 0 )
                 {
@@ -1412,7 +1421,7 @@ Would you like to enable achievements?
             ImGui::PopFont();
             if( animStage == 2 )
             {
-                if( ImGui::IsMouseHoveringRect( dismiss - ImVec2( 0, dpiScale * 6 ), dismiss + ImVec2( aSize, th * 1.5f + dpiScale * 4 ) ) && ImGui::IsMouseClicked( 0 ) )
+                if( ImGui::IsMouseHoveringRect( dismiss - ImVec2( 0, dpiScale * 6 ), dismiss + ImVec2( aSize, th * 1.5f + dpiScale * 4 ) ) && ImGui::IsMouseClicked( ImGuiMouseButton_Left ) )
                 {
                     s_achievementItem = aItem;
                     s_switchAchievementCategory = true;
@@ -1464,9 +1473,17 @@ Would you like to enable achievements?
                     {
                         ImGui::Columns( 2 );
                         ImGui::SetColumnWidth( 0, 300 * dpiScale );
+                        ImGui::BeginChild( "##achievementtoc", ImVec2( 0, 0 ), ImGuiChildFlags_AlwaysUseWindowPadding );
                         DrawAchievements( c->items );
+                        ImGui::EndChild();
                         ImGui::NextColumn();
-                        if( s_achievementItem ) s_achievementItem->description();
+                        ImGui::BeginChild( "##achievementtext", ImVec2( 0, 0 ), ImGuiChildFlags_AlwaysUseWindowPadding );
+                        if( s_achievementItem )
+                        {
+                            tracy::Markdown md( nullptr, nullptr );
+                            md.Print( s_achievementItem->text.c_str(), s_achievementItem->text.size() );
+                        }
+                        ImGui::EndChild();
                         ImGui::EndColumns();
                         ImGui::EndTabItem();
                     }

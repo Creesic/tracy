@@ -3,7 +3,9 @@
 #include "TracyColor.hpp"
 #include "TracyPrint.hpp"
 #include "TracyUtility.hpp"
+#include "TracyView.hpp"
 #include "TracyWorker.hpp"
+#include "../Fonts.hpp"
 
 namespace tracy
 {
@@ -213,17 +215,97 @@ std::vector<std::string> SplitLines( const char* data, size_t sz )
     return ret;
 }
 
-bool IsFrameExternal( const char* filename, const char* image )
+void PrintLocalStack( const CallstackFrameData* frame, const Worker& worker, const View& view )
 {
-    if( strncmp( filename, "/usr/", 5 ) == 0 || strncmp( filename, "/lib/", 5 ) == 0 || strcmp( filename, "[unknown]" ) == 0 || strcmp( filename, "<kernel>" ) == 0 ) return true;
-    if( strncmp( filename, "C:\\Program Files", 16 ) == 0 || strncmp( filename, "d:\\a01\\_work\\", 13 ) == 0 ) return true;
-    while( *filename )
+    for( uint8_t i=0; i<frame->size; i++ )
     {
-        if( filename[0] == '/' && filename[1] == '.' && filename[2] != '.' ) return true;
-        filename++;
+        ImGui::TextDisabled( "%i.", i+1 );
+        ImGui::SameLine();
+        const auto symName = worker.GetString( frame->data[i].name );
+        const auto normalized = view.GetShortenName() != ShortenName::Never ? ShortenZoneName( ShortenName::OnlyNormalize, symName ) : symName;
+        if( worker.IsFrameExternal( frame->data[i].file, frame->imageName ) )
+        {
+            TextDisabledUnformatted( normalized );
+        }
+        else
+        {
+            ImGui::TextUnformatted( normalized );
+        }
+        ImGui::SameLine();
+        ImGui::PushFont( g_fonts.normal, FontSmall );
+        ImGui::AlignTextToFramePadding();
+        const auto srcline = frame->data[i].line;
+        if( srcline != 0 )
+        {
+            ImGui::TextDisabled( "%s:%i", worker.GetString( frame->data[i].file ), srcline );
+        }
+        else
+        {
+            ImGui::TextDisabled( "%s", worker.GetString( frame->data[i].file ) );
+        }
+        ImGui::PopFont();
     }
-    if( !image ) return false;
-    return strncmp( image, "/usr/", 5 ) == 0 || strncmp( image, "/lib/", 5 ) == 0 || strncmp( image, "/lib64/", 7 ) == 0 || strcmp( image, "<kernel>" ) == 0;
+}
+
+static RangeSlim ListSections( const Vector<SectionItem>& sections, const Worker& worker )
+{
+    RangeSlim out = {};
+    int id = 0;
+    for( auto& v : sections )
+    {
+        ImGui::PushID( id++ );
+        const auto end = v.end.IsNonNegative() ? v.end.Val() : worker.GetLastTime();
+        if( ImGui::MenuItem( worker.GetString( v.text ) ) )
+        {
+            out.min = v.start.Val();
+            out.max = end;
+            out.active = true;
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::TextDisabled( "%s - %s (%s)", TimeToStringExact( v.start.Val() ), TimeToStringExact( end ), TimeToString( end - v.start.Val() ) );
+    }
+    return out;
+}
+
+RangeSlim ListSectionsMenu( const Worker& worker )
+{
+    RangeSlim out = {};
+    auto& sections = worker.GetSections();
+    if( sections.empty() )
+    {
+        TextDisabledUnformatted( ICON_FA_ARROWS_LEFT_RIGHT_TO_LINE " Sections" );
+    }
+    else if( ImGui::BeginMenu( ICON_FA_ARROWS_LEFT_RIGHT_TO_LINE " Sections" ) )
+    {
+        if( sections.size() == 1 )
+        {
+            out = ListSections( sections.begin()->second, worker );
+        }
+        else
+        {
+            std::vector<std::pair<uint16_t, const Vector<SectionItem>*>> s;
+            s.reserve( sections.size() );
+            for( auto& v : sections ) s.emplace_back( v.first, &v.second );
+            pdqsort_branchless( s.begin(), s.end(), []( const auto& lhs, const auto& rhs ) { return lhs.first < rhs.first; } );
+
+            int id = 0;
+            for( auto& v : s )
+            {
+                ImGui::PushID( id++ );
+                auto desc = worker.GetSectionCategoryDescription( v.first );
+                if( ImGui::BeginMenu( desc ) )
+                {
+                    auto res = ListSections( *v.second, worker );
+                    if( res.active ) out = res;
+                    ImGui::EndMenu();
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndMenu();
+    }
+    return out;
 }
 
 }

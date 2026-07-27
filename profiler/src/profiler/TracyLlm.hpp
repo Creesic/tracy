@@ -21,7 +21,15 @@ class TracyLlmChat;
 class TracyLlmTools;
 class TracyManualData;
 class View;
+class WindowConstraints;
 class Worker;
+
+struct LlmSkill
+{
+    std::string name;
+    std::string description;
+    std::string content;
+};
 
 class TracyLlm
 {
@@ -49,7 +57,7 @@ public:
 
     [[nodiscard]] bool IsBusy() const { std::lock_guard lock( m_jobsLock ); return m_busy; }
 
-    void Draw();
+    void Draw( WindowConstraints& constraints );
     /** Call each frame (e.g. from View) so integrator child process is reaped and start/stop stays in sync. */
     void TickIntegratorMcpIfEnabled() { UpdateIntegratorMcpProcess(); }
 
@@ -88,6 +96,9 @@ private:
     void AppendResponse( const char* name, const nlohmann::json& delta );
     bool OnResponse( const nlohmann::json& json );
 
+    void AddSkill( std::string&& name, std::string&& description, const std::shared_ptr<EmbedData>& content );
+    void AddPersonality( const std::shared_ptr<EmbedData>& content );
+
     std::unique_ptr<TracyLlmApi> m_api;
     std::unique_ptr<TracyLlmChat> m_chatUi;
     std::unique_ptr<TracyLlmTools> m_tools;
@@ -106,22 +117,27 @@ private:
 
     bool m_busy = false;
     bool m_focusInput = false;
-    int m_chatId = 0;
+    std::atomic<int> m_chatId {0};
     int m_usedCtx = 0;
     float m_temperature = 1.0f;
     bool m_setTemperature = false;
     bool m_allThinkingRegions = false;
+    int m_personalityPrompt = -1;
 
     char* m_input;
     char* m_apiInput;
     std::mutex m_chatLock;
     std::vector<nlohmann::json> m_chat;
     std::string m_summary;
+    std::string m_suggestion;
 
+    std::vector<LlmSkill> m_skills;
+    std::vector<std::string> m_personality;
     std::shared_ptr<EmbedData> m_systemPrompt;
     nlohmann::json m_toolsJson;
 
     Worker& m_worker;
+    View& m_view;
 
     static constexpr size_t IntegratorPathBuf = 2048;
     char m_integratorNode[256] = {};

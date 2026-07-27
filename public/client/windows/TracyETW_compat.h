@@ -1,13 +1,13 @@
 #ifndef __TRACY_ETW_COMPAT_H__
 #define __TRACY_ETW_COMPAT_H__
 
-// Compatibility definitions for MinGW-w64 which lacks some ETW types
+// Compatibility definitions for older Windows SDKs and MinGW-w64 which lacks some ETW types
 // present in Microsoft's Windows SDK
 
 #ifdef __MINGW32__
 
 // CONTROLTRACE_ID - ETW trace session handle type
-typedef ULONGLONG CONTROLTRACE_ID;
+typedef ULONG64 CONTROLTRACE_ID;
 
 // PROCESSTRACE_HANDLE - ETW process trace handle type
 // MinGW defines INVALID_PROCESSTRACE_HANDLE but not the type itself
@@ -40,6 +40,17 @@ static const GUID SystemSchedulerProviderGuid = { 0x599a2a76, 0x4d91, 0x4910, { 
 #define SYSTEM_PROCESS_KW_THREAD (0x0000000000000800)
 #define SYSTEM_SCHEDULER_KW_DISPATCHER (0x0000000000000002)
 #define SYSTEM_SCHEDULER_KW_CONTEXT_SWITCH (0x0000000000000200)
+
+#else // __MINGW32__
+
+// Backcompat with older sdk versions
+// SDK 10.0.26100 introduced those two and marked TRACEHANDLE obsolete
+// SDK 10.0.26100 is the first one to define NTDDI_VERSION and WDK_NTDDI_VERSION to NTDDI_WIN11_GE, while older ones will have lower versions and NTDDI_WIN11_GE undefined.
+// Just in case we check both definition and value.
+#if !(defined NTDDI_WIN11_GE && WDK_NTDDI_VERSION >= NTDDI_WIN11_GE)
+typedef ULONG64 PROCESSTRACE_HANDLE;
+typedef ULONG64 CONTROLTRACE_ID;
+#endif
 
 #endif // __MINGW32__
 

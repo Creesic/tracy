@@ -162,6 +162,15 @@ static ImGuiKey TranslateKeyCode( const char* code )
     return ImGuiKey_None;
 }
 
+static void UpdateKeyModifiers( const EmscriptenKeyboardEvent* e )
+{
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent( ImGuiMod_Ctrl, e->ctrlKey );
+    io.AddKeyEvent( ImGuiMod_Shift, e->shiftKey );
+    io.AddKeyEvent( ImGuiMod_Alt, e->altKey );
+    io.AddKeyEvent( ImGuiMod_Super, e->metaKey );
+}
+
 Backend::Backend( const char* title, const std::function<void()>& redraw, const std::function<void(float)>& scaleChanged, const std::function<int(void)>& isBusy, RunQueue* mainThreadTasks )
 {
     constexpr EGLint eglConfigAttrib[] = {
@@ -243,6 +252,7 @@ Backend::Backend( const char* title, const std::function<void()>& redraw, const 
         return EM_TRUE;
     } );
     emscripten_set_keydown_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, [] ( int, const EmscriptenKeyboardEvent* e, void* ) -> EM_BOOL {
+        UpdateKeyModifiers( e );
         const auto code = TranslateKeyCode( e->code );
         if( code == ImGuiKey_None ) return EM_FALSE;
         ImGui::GetIO().AddKeyEvent( code, true );
@@ -250,6 +260,7 @@ Backend::Backend( const char* title, const std::function<void()>& redraw, const 
         return EM_TRUE;
     } );
     emscripten_set_keyup_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, [] ( int, const EmscriptenKeyboardEvent* e, void* ) -> EM_BOOL {
+        UpdateKeyModifiers( e );
         const auto code = TranslateKeyCode( e->code );
         if( code == ImGuiKey_None ) return EM_FALSE;
         ImGui::GetIO().AddKeyEvent( code, false );
@@ -299,8 +310,12 @@ void Backend::NewFrame( int& w, int& h )
 
     if( s_width != w || s_height != h )
     {
-        EM_ASM( Module.canvas.style.width = window.innerWidth + 'px'; Module.canvas.style.height = window.innerHeight + 'px' );
-        EM_ASM( Module.canvas.width = $0; Module.canvas.height = $1, w, h );
+        EM_ASM( {
+            Module.canvas.style.width = ($0 / $2) + 'px';
+            Module.canvas.style.height = ($1 / $2) + 'px';
+            Module.canvas.width = $0;
+            Module.canvas.height = $1;
+        }, w, h, double( scale ) );
 
         s_width = w;
         s_height = h;
@@ -372,4 +387,14 @@ void Backend::SetTitle( const char* title )
 float Backend::GetDpiScale()
 {
     return EM_ASM_DOUBLE( { return window.devicePixelRatio; } );
+}
+
+size_t Backend::HandleType()
+{
+    return 0;
+}
+
+void* Backend::Handle()
+{
+    return nullptr;
 }

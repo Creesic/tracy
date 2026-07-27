@@ -21,6 +21,10 @@ if get_option('callstack') > 0
   tracy_common_args += ['-DTRACY_CALLSTACK='+get_option('callstack').to_string()]
 endif
 
+if get_option('platform_header') != ''
+  tracy_common_args += ['-DTRACY_PLATFORM_HEADER="'+get_option('platform_header')+'"']
+endif
+
 if get_option('no_callstack')
   tracy_common_args += ['-DTRACY_NO_CALLSTACK']
 endif
@@ -129,6 +133,10 @@ endif
 
 if get_option('ignore_memory_faults')
   tracy_common_args += ['-DTRACY_IGNORE_MEMORY_FAULTS']
+endif
+
+if get_option('opengl_auto_calibration')
+  tracy_common_args += ['-DTRACY_OPENGL_AUTO_CALIBRATION']
 endif
 
 tracy_shared_libs = get_option('default_library') == 'shared'

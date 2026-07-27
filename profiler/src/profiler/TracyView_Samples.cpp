@@ -8,6 +8,7 @@
 #include "TracySourceView.hpp"
 #include "TracyTimelineContext.hpp"
 #include "TracyTimelineDraw.hpp"
+#include "TracyUtility.hpp"
 #include "TracyView.hpp"
 #include "tracy_pdqsort.h"
 #include "../Fonts.hpp"
@@ -15,7 +16,7 @@
 namespace tracy
 {
 
-void View::DrawSampleList( const TimelineContext& ctx, const std::vector<SamplesDraw>& drawList, const Vector<SampleData>& vec, int offset )
+void View::DrawSampleList( const TimelineContext& ctx, const std::vector<SamplesDraw>& drawList, const Vector<SampleData>& vec, int offset, uint64_t tid )
 {
     const auto& wpos = ctx.wpos;
     const auto ty = ctx.ty;
@@ -52,7 +53,7 @@ void View::DrawSampleList( const TimelineContext& ctx, const std::vector<Samples
                 TextFocused( "Number of samples:", RealToString( v.num + 1 ) );
                 ImGui::EndTooltip();
 
-                if( IsMouseClicked( 2 ) )
+                if( IsMouseClicked( ImGuiMouseButton_Middle ) )
                 {
                     ZoomToRange( t0, t1 );
                 }
@@ -60,21 +61,31 @@ void View::DrawSampleList( const TimelineContext& ctx, const std::vector<Samples
         }
         else
         {
-            draw->AddCircleFilled( wpos + ImVec2( px0, ty0375 ), ty02, 0xFFDD8888 );
+            uint32_t color;
+            switch( v.type )
+            {
+                case SampleType::Own:       color = 0xFF88DD99; break;
+                case SampleType::External:  color = 0xFFDD6666; break;
+                case SampleType::Kernel:    color = 0xFF6666DD; break;
+            }
+            draw->AddCircleFilled( wpos + ImVec2( px0, ty0375 ), ty02, color );
             if( !tooltipDisplayed && hover && ImGui::IsMouseHoveringRect( wpos + ImVec2( px0 - ty02 - 2, y0 ), wpos + ImVec2( px0 + ty02 + 1, y1 ) ) )
             {
                 tooltipDisplayed = true;
                 CallstackTooltip( it->callstack.Val() );
-                if( IsMouseClicked( 0 ) )
+                if( IsMouseClicked( ImGuiMouseButton_Left ) )
                 {
-                    m_callstackInfoWindow = it->callstack.Val();
+                    m_callstackView = {
+                        .id = it->callstack.Val(),
+                        .thread = tid
+                    };
                 }
             }
         }
     }
 }
 
-void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, AccumulationMode accumulationMode )
+void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, uint64_t totalSamples, AccumulationMode accumulationMode )
 {
     static unordered_flat_map<uint64_t, SymList> inlineMap;
     assert( inlineMap.empty() );
@@ -86,15 +97,20 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
         {
             auto sym = m_worker.GetSymbolData( v.symAddr );
             const auto symAddr = ( sym && sym->isInline ) ? m_worker.GetSymbolForAddress( v.symAddr ) : v.symAddr;
+            // Inclusive counts of a base symbol and its inline functions overlap, as the base
+            // symbol is on the stack whenever any of its inlines is. The base's own inclusive
+            // count is therefore already the correct value for the aggregated entry, and the
+            // inline counts must not be added to it.
+            const auto isBase = symAddr == v.symAddr;
             auto it = baseMap.find( symAddr );
             if( it == baseMap.end() )
             {
-                baseMap.emplace( symAddr, SymList { symAddr, v.incl, v.excl, 0 } );
+                baseMap.emplace( symAddr, SymList { symAddr, isBase ? v.incl : 0, v.excl, 0 } );
             }
             else
             {
                 assert( symAddr == it->second.symAddr );
-                it->second.incl += v.incl;
+                if( isBase ) it->second.incl = v.incl;
                 it->second.excl += v.excl;
                 it->second.count++;
             }
@@ -140,17 +156,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
             ImGui::TableSetupColumn( "Code size", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize );
             ImGui::TableHeadersRow();
 
-            double revSampleCount100;
-            if( m_statRange.active && m_worker.GetSamplingPeriod() != 0 )
-            {
-                const auto st = m_statRange.max - m_statRange.min;
-                const auto cnt = st / m_worker.GetSamplingPeriod();
-                revSampleCount100 = 100. / cnt;
-            }
-            else
-            {
-                revSampleCount100 = 100. / m_worker.GetCallstackSampleCount();
-            }
+            const double revSampleCount100 = totalSamples == 0 ? 0 : 100. / totalSamples;
 
             const bool showAll = m_showAllSymbols;
             const auto period = m_worker.GetSamplingPeriod();
@@ -234,7 +240,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                         if( v.count > 0 && v.symAddr != 0 )
                         {
                             ImGui::PushID( v.symAddr );
-                            expand = ImGui::TreeNodeEx( "", v.count == 0 ? ImGuiTreeNodeFlags_Leaf : 0 );
+                            expand = ImGui::TreeNode( "" );
                             ImGui::PopID();
                             ImGui::SameLine();
                         }
@@ -277,103 +283,107 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                         }
                     }
 
+                    // Symbols which only have inclusive counts are still interactive, as the
+                    // entry stacks are available for them in the reached modes.
+                    const bool interactive = v.symAddr != 0 && ( !hasNoSamples || cnt > 0 );
+
                     Vector<SymList> inSymList;
-                    if( !m_statSeparateInlines && !hasNoSamples && v.count > 0 && v.symAddr != 0 && ( expand || m_topInline ) )
+                    if( !m_statSeparateInlines && ( !hasNoSamples || cnt > 0 ) && v.count > 0 && v.symAddr != 0 && ( expand || m_topInline ) )
                     {
-                        assert( v.count > 0 );
-                        assert( symlen != 0 );
                         auto inSym = m_worker.GetInlineSymbolList( v.symAddr, symlen );
-                        assert( inSym != nullptr );
-                        const auto symEnd = v.symAddr + symlen;
-                        if( !m_mergeInlines )
+                        if( inSym )
                         {
-                            while( *inSym < symEnd )
+                            const auto symEnd = v.symAddr + symlen;
+                            if( !m_mergeInlines )
                             {
-                                auto sit = inlineMap.find( *inSym );
-                                if( sit != inlineMap.end() )
+                                while( *inSym < symEnd )
                                 {
-                                    inSymList.push_back( SymList { *inSym, sit->second.incl, sit->second.excl } );
-                                }
-                                else
-                                {
-                                    inSymList.push_back( SymList { *inSym, 0, 0 } );
-                                }
-                                inSym++;
-                            }
-                        }
-                        else
-                        {
-                            unordered_flat_map<uint32_t, uint64_t> mergeMap;
-                            unordered_flat_map<uint64_t, SymList> outMap;
-                            while( *inSym < symEnd )
-                            {
-                                auto symAddr = *inSym;
-                                auto sit = inlineMap.find( symAddr );
-                                auto sym = symMap.find( symAddr );
-                                if( sym != symMap.end() )
-                                {
-                                    auto mit = mergeMap.find( sym->second.name.Idx() );
-                                    if( mit == mergeMap.end() )
-                                    {
-                                        mergeMap.emplace( sym->second.name.Idx(), symAddr );
-                                    }
-                                    else
-                                    {
-                                        symAddr = mit->second;
-                                    }
+                                    auto sit = inlineMap.find( *inSym );
                                     if( sit != inlineMap.end() )
                                     {
-                                        auto oit = outMap.find( symAddr );
-                                        if( oit == outMap.end() )
-                                        {
-                                            outMap.emplace( symAddr, SymList { symAddr, sit->second.incl, sit->second.excl, 1 } );
-                                        }
-                                        else
-                                        {
-                                            oit->second.incl += sit->second.incl;
-                                            oit->second.excl += sit->second.excl;
-                                            oit->second.count++;
-                                        }
+                                        inSymList.push_back( SymList { *inSym, sit->second.incl, sit->second.excl } );
                                     }
                                     else
                                     {
-                                        auto oit = outMap.find( symAddr );
-                                        if( oit == outMap.end() )
+                                        inSymList.push_back( SymList { *inSym, 0, 0 } );
+                                    }
+                                    inSym++;
+                                }
+                            }
+                            else
+                            {
+                                unordered_flat_map<uint32_t, uint64_t> mergeMap;
+                                unordered_flat_map<uint64_t, SymList> outMap;
+                                while( *inSym < symEnd )
+                                {
+                                    auto symAddr = *inSym;
+                                    auto sit = inlineMap.find( symAddr );
+                                    auto sym = symMap.find( symAddr );
+                                    if( sym != symMap.end() )
+                                    {
+                                        auto mit = mergeMap.find( sym->second.name.Idx() );
+                                        if( mit == mergeMap.end() )
                                         {
-                                            outMap.emplace( symAddr, SymList { symAddr, 0, 0, 1 } );
+                                            mergeMap.emplace( sym->second.name.Idx(), symAddr );
                                         }
                                         else
                                         {
-                                            oit->second.count++;
+                                            symAddr = mit->second;
+                                        }
+                                        if( sit != inlineMap.end() )
+                                        {
+                                            auto oit = outMap.find( symAddr );
+                                            if( oit == outMap.end() )
+                                            {
+                                                outMap.emplace( symAddr, SymList { symAddr, sit->second.incl, sit->second.excl, 1 } );
+                                            }
+                                            else
+                                            {
+                                                oit->second.incl += sit->second.incl;
+                                                oit->second.excl += sit->second.excl;
+                                                oit->second.count++;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            auto oit = outMap.find( symAddr );
+                                            if( oit == outMap.end() )
+                                            {
+                                                outMap.emplace( symAddr, SymList { symAddr, 0, 0, 1 } );
+                                            }
+                                            else
+                                            {
+                                                oit->second.count++;
+                                            }
                                         }
                                     }
+                                    inSym++;
                                 }
-                                inSym++;
+                                inSymList.reserve( outMap.size() );
+                                for( auto& v : outMap )
+                                {
+                                    inSymList.push_back( v.second );
+                                }
                             }
-                            inSymList.reserve( outMap.size() );
-                            for( auto& v : outMap )
+                            auto statIt = inlineMap.find( v.symAddr );
+                            if( statIt != inlineMap.end() )
                             {
-                                inSymList.push_back( v.second );
+                                inSymList.push_back( SymList { v.symAddr, statIt->second.incl, statIt->second.excl } );
                             }
-                        }
-                        auto statIt = inlineMap.find( v.symAddr );
-                        if( statIt != inlineMap.end() )
-                        {
-                            inSymList.push_back( SymList { v.symAddr, statIt->second.incl, statIt->second.excl } );
-                        }
 
-                        if( accumulationMode == AccumulationMode::SelfOnly )
-                        {
-                            pdqsort_branchless( inSymList.begin(), inSymList.end(), []( const auto& l, const auto& r ) { return l.excl != r.excl ? l.excl > r.excl : l.symAddr < r.symAddr; } );
-                        }
-                        else
-                        {
-                            pdqsort_branchless( inSymList.begin(), inSymList.end(), []( const auto& l, const auto& r ) { return l.incl != l.incl ? l.incl > r.incl : l.symAddr < r.symAddr; } );
+                            if( accumulationMode == AccumulationMode::SelfOnly )
+                            {
+                                pdqsort_branchless( inSymList.begin(), inSymList.end(), []( const auto& l, const auto& r ) { return l.excl != r.excl ? l.excl > r.excl : l.symAddr < r.symAddr; } );
+                            }
+                            else
+                            {
+                                pdqsort_branchless( inSymList.begin(), inSymList.end(), []( const auto& l, const auto& r ) { return l.incl != r.incl ? l.incl > r.incl : l.symAddr < r.symAddr; } );
+                            }
                         }
                     }
 
                     const auto origName = name;
-                    if( hasNoSamples )
+                    if( !interactive )
                     {
                         if( isKernel )
                         {
@@ -392,9 +402,10 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                     }
                     else
                     {
-                        if( !inSymList.empty() && m_topInline )
+                        auto topIt = ( !inSymList.empty() && m_topInline ) ? symMap.find( inSymList[0].symAddr ) : symMap.end();
+                        if( topIt != symMap.end() )
                         {
-                            const auto topName = m_worker.GetString( symMap.find( inSymList[0].symAddr )->second.name );
+                            const auto topName = m_worker.GetString( topIt->second.name );
                             if( topName != name )
                             {
                                 // Parent name at this point should only be enabled if m_statSeparateInlines
@@ -449,7 +460,11 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                                 }
                             }
                             if( !sfv ) ImGui::EndDisabled();
+                            const auto estat = m_worker.AreCallstackSamplesReady() ? m_worker.GetSymbolStats( v.symAddr ) : nullptr;
+                            const bool sev = estat && !estat->wasReached.empty() && m_worker.GetSymbolData( v.symAddr );
+                            if( !sev ) ImGui::BeginDisabled();
                             if( ImGui::MenuItem( ICON_FA_ARROW_DOWN_SHORT_WIDE " Sample entry stacks" ) ) ShowSampleParents( v.symAddr, !m_statSeparateInlines );
+                            if( !sev ) ImGui::EndDisabled();
                             ImGui::EndPopup();
                         }
                         ImGui::PopID();
@@ -491,7 +506,19 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                     }
                     if( ImGui::IsItemHovered() )
                     {
-                        DrawSourceTooltip( file, line );
+                        auto frame = m_worker.GetCallstackFrame( m_worker.PackPointer( v.symAddr ) );
+                        if( frame && frame->size > 1 )
+                        {
+                            ImGui::BeginTooltip();
+                            if( DrawSourceTooltip( file, line, 3, 3, false ) ) ImGui::Separator();
+                            TextDisabledUnformatted( "Local call stack:" );
+                            PrintLocalStack( frame, m_worker, *this );
+                            ImGui::EndTooltip();
+                        }
+                        else
+                        {
+                            DrawSourceTooltip( file, line );
+                        }
                         if( ImGui::IsItemClicked( 1 ) )
                         {
                             if( SourceFileValid( file, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -579,7 +606,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
 
                     if( !m_statSeparateInlines && expand )
                     {
-                        const auto revBaseCnt = 100.0 / baseCnt;
+                        const auto revBaseCnt = baseCnt == 0 ? 0 : 100.0 / baseCnt;
                         ImGui::Indent();
                         for( auto& iv : inSymList )
                         {
@@ -634,7 +661,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                                 {
                                     sn = name;
                                 }
-                                if( m_mergeInlines || iv.excl == 0 )
+                                if( m_mergeInlines || cnt == 0 )
                                 {
                                     if( m_vd.shortenName == ShortenName::Never )
                                     {
@@ -687,7 +714,11 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                                             }
                                         }
                                         if( !sfv ) ImGui::EndDisabled();
+                                        const auto estat = m_worker.AreCallstackSamplesReady() ? m_worker.GetSymbolStats( iv.symAddr ) : nullptr;
+                                        const bool sev = estat && !estat->wasReached.empty() && m_worker.GetSymbolData( iv.symAddr );
+                                        if( !sev ) ImGui::BeginDisabled();
                                         if( ImGui::MenuItem( ICON_FA_ARROW_DOWN_SHORT_WIDE " Sample entry stacks" ) ) ShowSampleParents( iv.symAddr, false );
+                                        if( !sev ) ImGui::EndDisabled();
                                         ImGui::EndPopup();
                                     }
                                     ImGui::PopID();
@@ -720,7 +751,21 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                                 }
                                 if( ImGui::IsItemHovered() )
                                 {
-                                    DrawSourceTooltip( file, line );
+                                    bool passed = false;
+                                    if( iv.count <= 1 )
+                                    {
+                                        auto frame = m_worker.GetCallstackFrame( m_worker.PackPointer( iv.symAddr ) );
+                                        if( frame && frame->size > 1 )
+                                        {
+                                            ImGui::BeginTooltip();
+                                            if( DrawSourceTooltip( file, line, 3, 3, false ) ) ImGui::Separator();
+                                            TextDisabledUnformatted( "Local call stack:" );
+                                            PrintLocalStack( frame, m_worker, *this );
+                                            ImGui::EndTooltip();
+                                            passed = true;
+                                        }
+                                    }
+                                    if( !passed ) DrawSourceTooltip( file, line );
                                     if( ImGui::IsItemClicked( 1 ) )
                                     {
                                         if( SourceFileValid( file, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -762,8 +807,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
                                         ImGui::TextUnformatted( TimeToString( t ) );
                                         if( m_relativeInlines )
                                         {
-                                            const auto tBase = baseCnt * period;
-                                            PrintStringPercent( buf, 100. * t / tBase );
+                                            PrintStringPercent( buf, cnt * revBaseCnt );
                                         }
                                         else
                                         {
@@ -802,43 +846,65 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, Accu
 
 void View::DrawSampleParents()
 {
+    const auto ss = m_worker.GetSymbolStats( m_sampleParents.symAddr );
+    const auto symbol = m_worker.GetSymbolData( m_sampleParents.symAddr );
+    if( !ss || !symbol )
+    {
+        m_sampleParents.symAddr = 0;
+        return;
+    }
+
     bool show = true;
     const auto scale = GetScale();
     ImGui::SetNextWindowSize( ImVec2( 1400 * scale, 500 * scale ), ImGuiCond_FirstUseEver );
+    m_sampleEntryConstraint.Constrain();
     ImGui::Begin( "Sample entry stacks", &show, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
     if( !ImGui::GetCurrentWindowRead()->SkipItems )
     {
-        auto ss = m_worker.GetSymbolStats( m_sampleParents.symAddr );
-        auto excl = ss->excl;
-        auto stats = ss->parents;
+        if( m_sampleParents.statMode == 0 && ss->wasExecuting.empty() ) m_sampleParents.statMode = 1;
 
-        const auto symbol = m_worker.GetSymbolData( m_sampleParents.symAddr );
-        if( !symbol->isInline && m_sampleParents.withInlines )
+        uint64_t total = 0;
+        unordered_flat_map<uint32_t, uint32_t> stats;
+        if( m_sampleParents.statMode == 0 )
         {
-            const auto symlen = symbol->size.Val();
-            auto inSym = m_worker.GetInlineSymbolList( m_sampleParents.symAddr, symlen );
-            if( inSym )
+            auto excl = ss->excl;
+            stats = ss->wasExecuting;
+            if( !symbol->isInline && m_sampleParents.withInlines )
             {
-                const auto symEnd = m_sampleParents.symAddr + symlen;
-                while( *inSym < symEnd )
+                const auto symlen = symbol->size.Val();
+                auto inSym = m_worker.GetInlineSymbolList( m_sampleParents.symAddr, symlen );
+                if( inSym )
                 {
-                    auto istat = m_worker.GetSymbolStats( *inSym++ );
-                    if( !istat ) continue;
-                    excl += istat->excl;
-                    for( auto& v : istat->baseParents )
+                    const auto symEnd = m_sampleParents.symAddr + symlen;
+                    while( *inSym < symEnd )
                     {
-                        auto it = stats.find( v.first );
-                        if( it == stats.end() )
+                        auto istat = m_worker.GetSymbolStats( *inSym++ );
+                        if( !istat ) continue;
+                        excl += istat->excl;
+                        for( auto& v : istat->wasExecutingBase )
                         {
-                            stats.emplace( v.first, v.second );
-                        }
-                        else
-                        {
-                            it->second += v.second;
+                            auto it = stats.find( v.first );
+                            if( it == stats.end() )
+                            {
+                                stats.emplace( v.first, v.second );
+                            }
+                            else
+                            {
+                                it->second += v.second;
+                            }
                         }
                     }
                 }
             }
+            total = excl;
+        }
+        else
+        {
+            // A base symbol is always present as the last frame of any frame group containing
+            // its inline functions, so the wasReached maps already cover the whole symbol.
+            // There is no separate with/without inlines handling here.
+            stats = m_sampleParents.statMode == 1 ? ss->wasReachedNonReentrant : ss->wasReached;
+            for( auto& v : stats ) total += v.second;
         }
         assert( !stats.empty() );
 
@@ -857,7 +923,7 @@ void View::DrawSampleParents()
             ImGui::SameLine();
             TextDisabledUnformatted( "(inline)" );
         }
-        else if( !m_sampleParents.withInlines )
+        else if( !m_sampleParents.withInlines && m_sampleParents.statMode == 0 )
         {
             ImGui::SameLine();
             TextDisabledUnformatted( "(without inlines)" );
@@ -885,15 +951,34 @@ void View::DrawSampleParents()
         TextDisabledUnformatted( m_worker.GetString( symbol->imageName ) );
         ImGui::Separator();
         ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( 2, 2 ) );
+        ImGui::AlignTextToFramePadding();
+        TextDisabledUnformatted( "Count if symbol:" );
+        ImGui::SameLine();
+        if( ImGui::RadioButton( "Was reached", m_sampleParents.statMode == 1 ) ) { m_sampleParents.statMode = 1; m_sampleParents.sel = 0; }
+        TooltipIfHovered( "Stacks below any occurrence of the symbol, non-reentrant.\nEach sample is counted once, at the outermost occurrence." );
+        ImGui::SameLine();
+        ImGui::Spacing();
+        ImGui::SameLine();
+        if( ImGui::RadioButton( "Was reached, recursive", m_sampleParents.statMode == 2 ) ) { m_sampleParents.statMode = 2; m_sampleParents.sel = 0; }
+        TooltipIfHovered( "Stacks below any occurrence of the symbol.\nRecursive re-entries are counted separately." );
+        ImGui::SameLine();
+        ImGui::Spacing();
+        ImGui::SameLine();
+        const bool noExecuting = ss->wasExecuting.empty();
+        if( noExecuting ) ImGui::BeginDisabled();
+        if( ImGui::RadioButton( "Was executing", m_sampleParents.statMode == 0 ) ) { m_sampleParents.statMode = 0; m_sampleParents.sel = 0; }
+        if( noExecuting ) ImGui::EndDisabled();
+        TooltipIfHovered( "Stacks of samples taken while the symbol was executing" );
+        ImGui::Separator();
         if( ImGui::RadioButton( ICON_FA_TABLE " List", m_sampleParents.mode == 0 ) ) m_sampleParents.mode = 0;
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
-        if( ImGui::RadioButton( ICON_FA_TREE " Bottom-up tree", m_sampleParents.mode == 1 ) ) m_sampleParents.mode = 1;
+        if( ImGui::RadioButton( ICON_FA_TREE ICON_FA_ARROW_UP " Bottom-up tree", m_sampleParents.mode == 1 ) ) m_sampleParents.mode = 1;
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
-        if( ImGui::RadioButton( ICON_FA_TREE " Top-down tree", m_sampleParents.mode == 2 ) ) m_sampleParents.mode = 2;
+        if( ImGui::RadioButton( ICON_FA_TREE ICON_FA_ARROW_DOWN " Top-down tree", m_sampleParents.mode == 2 ) ) m_sampleParents.mode = 2;
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
@@ -954,9 +1039,9 @@ void View::DrawSampleParents()
             ImGui::TextUnformatted( m_statSampleTime ? TimeToString( m_worker.GetSamplingPeriod() * data[m_sampleParents.sel]->second ) : RealToString( data[m_sampleParents.sel]->second ) );
             ImGui::SameLine();
             char buf[64];
-            PrintStringPercent( buf, 100. * data[m_sampleParents.sel]->second / excl );
+            PrintStringPercent( buf, 100. * data[m_sampleParents.sel]->second / total );
             TextDisabledUnformatted( buf );
-            auto& cs = m_worker.GetParentCallstack( data[m_sampleParents.sel]->first );
+            auto& cs = m_worker.GetSyntheticCallstack( data[m_sampleParents.sel]->first );
             if( s_config.llm )
             {
                 ImGui::SameLine();
@@ -985,6 +1070,7 @@ void View::DrawSampleParents()
             ImGui::SameLine();
             ImGui::RadioButton( "Symbol address", &m_showCallstackFrameAddress, 2 );
             ImGui::PopStyleVar();
+            m_sampleEntryConstraint.MarkMinWidth();
 
             ImGui::Separator();
             if( ImGui::BeginTable( "##callstack", 4, ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY ) )
@@ -1001,16 +1087,15 @@ void View::DrawSampleParents()
                 int bidx = 0;
                 for( auto& entry : cs )
                 {
-                    auto frameData = entry.custom ? m_worker.GetParentCallstackFrame( entry ) : m_worker.GetCallstackFrame( entry );
+                    auto frameData = entry.custom ? m_worker.GetSyntheticCallstackFrame( entry ) : m_worker.GetCallstackFrame( entry );
                     assert( frameData );
                     const auto fsz = frameData->size;
                     for( uint8_t f=0; f<fsz; f++ )
                     {
                         const auto& frame = frameData->data[f];
-                        auto filename = m_worker.GetString( frame.file );
-                        auto image = frameData->imageName.Active() ? m_worker.GetString( frameData->imageName ) : nullptr;
 
-                        if( IsFrameExternal( filename, image ) )
+                        const auto isExternal = m_worker.IsFrameExternal( frame.file, frameData->imageName );
+                        if( isExternal )
                         {
                             if( !m_showExternalFrames )
                             {
@@ -1062,6 +1147,10 @@ void View::DrawSampleParents()
                             else if( m_worker.GetCanonicalPointer( entry ) >> 63 != 0 )
                             {
                                 TextColoredUnformatted( 0xFF8888FF, txt );
+                            }
+                            else if( isExternal )
+                            {
+                                TextDisabledUnformatted( txt );
                             }
                             else if( m_vd.shortenName == ShortenName::Never )
                             {
@@ -1241,23 +1330,12 @@ void View::DrawSampleParents()
             break;
         }
         case 1:
-        {
-            auto tree = GetParentsCallstackFrameTreeBottomUp( stats, m_sampleParents.groupBottomUp );
-            if( !tree.empty() )
-            {
-                int idx = 0;
-                DrawParentsFrameTreeLevel( tree, idx );
-            }
-            else
-            {
-                TextDisabledUnformatted( "No call stacks to show" );
-            }
-
-            break;
-        }
         case 2:
         {
-            auto tree = GetParentsCallstackFrameTreeTopDown( stats, m_sampleParents.groupTopDown );
+            auto tree = m_sampleParents.mode == 1 ?
+                GetParentsCallstackFrameTreeBottomUp( stats, m_sampleParents.groupBottomUp ) :
+                GetParentsCallstackFrameTreeTopDown( stats, m_sampleParents.groupTopDown );
+
             if( !tree.empty() )
             {
                 int idx = 0;

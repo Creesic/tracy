@@ -36,7 +36,7 @@ struct Config
 #else
     bool llm = true;
 #endif
-    std::string llmAddress = "http://localhost:11434";
+    std::string llmAddress = "http://localhost:8080";
     std::string llmModel;
     std::string llmFastModel;
     std::string llmEmbeddingsModel;
@@ -44,10 +44,13 @@ struct Config
     std::string llmSearchIdentifier;
     std::string llmSearchApiKey;
     std::string llmSearchBraveApiKey;
-    bool llmSeparateFastModel = true;
+    bool llmSeparateFastModel = false;
     bool llmAnnotateCallstacks = false;
     bool llmLimitToolReplySize = false;
     int llmMaxToolReplySizeValue = 48*1024;
+    bool llmSummary = true;
+    bool llmSuggestion = true;
+    int llmPersonality = 0;
 
     // Local Node MCP server for the trace integrator (port via TRACY_MCP_HTTP_PORT)
     bool llmIntegratorMcpEnabled = false;

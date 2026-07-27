@@ -10,6 +10,8 @@
 #    define TRACY_SAMPLING_HZ 8000
 #  elif defined __linux__
 #    define TRACY_SAMPLING_HZ 10000
+#  elif defined __APPLE__
+#    define TRACY_SAMPLING_HZ 1000
 #  endif
 #endif
 
@@ -59,9 +61,7 @@ static int SamplingFrequencyToPeriodNs( int samplingHz )
 #    include "../common/TracySystem.hpp"
 #    include "TracyProfiler.hpp"
 #    include "TracyThread.hpp"
-#    ifdef __MINGW32__
-#      include "windows/TracyETW_compat.h"
-#    endif
+#    include "windows/TracyETW_compat.h"
 #    include "windows/TracyETW.cpp"
 
 namespace tracy
@@ -106,8 +106,8 @@ void WINAPI EventRecordCallback( PEVENT_RECORD record )
             MemWrite( &item->contextSwitch.oldThread, cswitch->oldThreadId );
             MemWrite( &item->contextSwitch.newThread, cswitch->newThreadId );
             MemWrite( &item->contextSwitch.cpu, record->BufferContext.ProcessorNumber );
-            MemWrite( &item->contextSwitch.oldThreadWaitReason, cswitch->oldThreadWaitReason );
-            MemWrite( &item->contextSwitch.oldThreadState, cswitch->oldThreadState );
+            MemWrite( &item->contextSwitch.oldThreadWaitReason, uint8_t( cswitch->oldThreadWaitReason ) );
+            MemWrite( &item->contextSwitch.oldThreadState, uint8_t( cswitch->oldThreadState ) );
             MemWrite( &item->contextSwitch.newThreadPriority, cswitch->newThreadPriority );
             MemWrite( &item->contextSwitch.oldThreadPriority, cswitch->oldThreadPriority );
             MemWrite( &item->contextSwitch.previousCState, cswitch->previousCState );
@@ -151,9 +151,9 @@ void WINAPI EventRecordCallback( PEVENT_RECORD record )
                     memcpy( trace, &sz, sizeof( uint64_t ) );
                     memcpy( trace+1, sw->stack, sizeof( uint64_t ) * sz );
                     TracyLfqPrepare( QueueType::CallstackSample );
-                    MemWrite( &item->callstackSampleFat.time, sw->eventTimeStamp );
+                    MemWrite( &item->callstackSampleFat.time, int64_t( sw->eventTimeStamp ) );
                     MemWrite( &item->callstackSampleFat.thread, sw->stackThread );
-                    MemWrite( &item->callstackSampleFat.ptr, (uint64_t)trace );
+                    MemWrite( &item->callstackSampleFat.ptr, uint64_t( trace ) );
                     TracyLfqCommit;
                 }
             }
@@ -1109,7 +1109,7 @@ void SysTraceWorker( void* ptr )
 {
     ThreadExitHandler threadExitHandler;
     SetThreadName( "Tracy Sampling" );
-    InitRpmalloc();
+    InitAllocator();
     sched_param sp = { 99 };
     if( pthread_setschedparam( pthread_self(), SCHED_FIFO, &sp ) != 0 ) TracyDebug( "Failed to increase SysTraceWorker thread priority!" );
     auto ctxBufferIdx = s_ctxBufferIdx;
@@ -1170,29 +1170,30 @@ void SysTraceWorker( void* ptr )
                         //   u64 cnt
                         //   u64 ip[cnt]
 
-                        uint32_t tid;
-                        uint64_t t0;
-                        uint64_t cnt;
+#pragma pack( push, 1 )
+                        struct
+                        {
+                            uint32_t tid;
+                            uint64_t t0;
+                            uint64_t cnt;
+                        } buf;
+#pragma pack( pop )
 
                         offset += sizeof( uint32_t );
-                        ring.Read( &tid, offset, sizeof( uint32_t ) );
-                        offset += sizeof( uint32_t );
-                        ring.Read( &t0, offset, sizeof( uint64_t ) );
-                        offset += sizeof( uint64_t );
-                        ring.Read( &cnt, offset, sizeof( uint64_t ) );
-                        offset += sizeof( uint64_t );
+                        ring.Read( &buf, offset, sizeof( buf ) );
+                        offset += sizeof( buf );
 
-                        if( cnt > 0 )
+                        if( buf.cnt > 0 )
                         {
 #if defined TRACY_HW_TIMER && defined TRACY_HAS_RDTSC
-                            t0 = ring.ConvertTimeToTsc( t0 );
+                            buf.t0 = ring.ConvertTimeToTsc( buf.t0 );
 #endif
-                            auto trace = GetCallstackBlock( cnt, ring, offset );
+                            auto trace = GetCallstackBlock( buf.cnt, ring, offset );
 
                             TracyLfqPrepare( QueueType::CallstackSample );
-                            MemWrite( &item->callstackSampleFat.time, t0 );
-                            MemWrite( &item->callstackSampleFat.thread, tid );
-                            MemWrite( &item->callstackSampleFat.ptr, (uint64_t)trace );
+                            MemWrite( &item->callstackSampleFat.time, int64_t( buf.t0 ) );
+                            MemWrite( &item->callstackSampleFat.thread, buf.tid );
+                            MemWrite( &item->callstackSampleFat.ptr, uint64_t( trace ) );
                             TracyLfqCommit;
                         }
                     }
@@ -1213,13 +1214,15 @@ void SysTraceWorker( void* ptr )
                         //   u64 ip
                         //   u64 time
 
-                        uint64_t ip, t0;
-                        ring.Read( &ip, offset, sizeof( uint64_t ) );
-                        offset += sizeof( uint64_t );
-                        ring.Read( &t0, offset, sizeof( uint64_t ) );
+                        struct
+                        {
+                            uint64_t ip, t0;
+                        } buf;
+
+                        ring.Read( &buf, offset, sizeof( buf ) );
 
 #if defined TRACY_HW_TIMER && defined TRACY_HAS_RDTSC
-                        t0 = ring.ConvertTimeToTsc( t0 );
+                        buf.t0 = ring.ConvertTimeToTsc( buf.t0 );
 #endif
                         QueueType type;
                         switch( id )
@@ -1247,8 +1250,8 @@ void SysTraceWorker( void* ptr )
                         }
 
                         TracyLfqPrepare( type );
-                        MemWrite( &item->hwSample.ip, ip );
-                        MemWrite( &item->hwSample.time, t0 );
+                        MemWrite( &item->hwSample.ip, buf.ip );
+                        MemWrite( &item->hwSample.time, int64_t( buf.t0 ) );
                         TracyLfqCommit;
                     }
                     pos += hdr.size;
@@ -1267,19 +1270,39 @@ void SysTraceWorker( void* ptr )
             uint16_t active[512];
             uint32_t end[512];
             uint32_t pos[512];
+            int64_t time[512];
+
+            auto PrimeNext = [&pos, &end, &time]( int idx, RingBuffer& ring ) {
+                while( pos[idx] < end[idx] )
+                {
+                    perf_event_header hdr;
+                    ring.Read( &hdr, pos[idx], sizeof( hdr ) );
+                    if( hdr.type == PERF_RECORD_SAMPLE )
+                    {
+                        ring.Read( time + idx, pos[idx] + sizeof( hdr ), sizeof( int64_t ) );
+                        return true;
+                    }
+                    assert( hdr.size > 0 );
+                    pos[idx] += hdr.size;
+                }
+                return false;
+            };
+
             for( int i=0; i<ctxBufNum; i++ )
             {
                 const auto rbIdx = ctxBufferIdx + i;
                 const auto rbHead = ringArray[rbIdx].LoadHead();
                 const auto rbTail = ringArray[rbIdx].GetTail();
-                const auto rbActive = rbHead != rbTail;
 
-                if( rbActive )
+                if( rbHead != rbTail )
                 {
-                    active[activeNum] = (uint16_t)i;
-                    activeNum++;
                     end[i] = rbHead - rbTail;
                     pos[i] = 0;
+                    if( PrimeNext( i, ringArray[rbIdx] ) )
+                    {
+                        active[activeNum] = (uint16_t)i;
+                        activeNum++;
+                    }
                 }
                 else
                 {
@@ -1298,40 +1321,18 @@ void SysTraceWorker( void* ptr )
                     for( int i=0; i<activeNum; i++ )
                     {
                         auto idx = active[i];
-                        auto rbPos = pos[idx];
-                        assert( rbPos < end[idx] );
-                        const auto rbIdx = ctxBufferIdx + idx;
-                        perf_event_header hdr;
-                        ringArray[rbIdx].Read( &hdr, rbPos, sizeof( perf_event_header ) );
-                        if( hdr.type == PERF_RECORD_SAMPLE )
+                        if( time[idx] < t0 )
                         {
-                            int64_t rbTime;
-                            ringArray[rbIdx].Read( &rbTime, rbPos + sizeof( perf_event_header ), sizeof( int64_t ) );
-                            if( rbTime < t0 )
-                            {
-                                t0 = rbTime;
-                                sel = idx;
-                                selPos = i;
-                            }
-                        }
-                        else
-                        {
-                            rbPos += hdr.size;
-                            if( rbPos == end[idx] )
-                            {
-                                memmove( active+i, active+i+1, sizeof(*active) * ( activeNum - i - 1 ) );
-                                activeNum--;
-                                i--;
-                            }
-                            else
-                            {
-                                pos[idx] = rbPos;
-                            }
+                            t0 = time[idx];
+                            sel = idx;
+                            selPos = i;
                         }
                     }
                     // Found any event
                     if( sel >= 0 )
                     {
+                        assert( pos[sel] < end[sel] );
+
                         auto& ring = ringArray[ctxBufferIdx + sel];
                         auto rbPos = pos[sel];
                         auto offset = rbPos;
@@ -1369,52 +1370,48 @@ void SysTraceWorker( void* ptr )
                             const auto traceOffset = offset;
                             offset += sizeof( uint64_t ) * cnt + sizeof( uint32_t ) + 8 + 16;
 
-                            uint32_t prev_pid, prev_prio;
-                            uint32_t next_pid, next_prio;
-                            long prev_state;
+                            struct
+                            {
+                                uint32_t prev_pid, prev_prio;
+                                long prev_state;
+                                char next_comm[16];
+                                uint32_t next_pid, next_prio;
+                            } buf;
 
-                            ring.Read( &prev_pid, offset, sizeof( uint32_t ) );
-                            offset += sizeof( uint32_t );
-                            ring.Read( &prev_prio, offset, sizeof( uint32_t ) );
-                            offset += sizeof( uint32_t );
-                            ring.Read( &prev_state, offset, sizeof( long ) );
-                            offset += sizeof( long ) + 16;
-                            ring.Read( &next_pid, offset, sizeof( uint32_t ) );
-                            offset += sizeof( uint32_t );
-                            ring.Read( &next_prio, offset, sizeof( uint32_t ) );
+                            ring.Read( &buf, offset, sizeof( buf ) );
 
                             uint8_t oldThreadWaitReason = 100;
                             uint8_t oldThreadState;
 
-                            if(      prev_state & 0x0001 ) oldThreadState = 104;
-                            else if( prev_state & 0x0002 ) oldThreadState = 101;
-                            else if( prev_state & 0x0004 ) oldThreadState = 105;
-                            else if( prev_state & 0x0008 ) oldThreadState = 106;
-                            else if( prev_state & 0x0010 ) oldThreadState = 108;
-                            else if( prev_state & 0x0020 ) oldThreadState = 109;
-                            else if( prev_state & 0x0040 ) oldThreadState = 110;
-                            else if( prev_state & 0x0080 ) oldThreadState = 102;
+                            if(      buf.prev_state & 0x0001 ) oldThreadState = 104;
+                            else if( buf.prev_state & 0x0002 ) oldThreadState = 101;
+                            else if( buf.prev_state & 0x0004 ) oldThreadState = 105;
+                            else if( buf.prev_state & 0x0008 ) oldThreadState = 106;
+                            else if( buf.prev_state & 0x0010 ) oldThreadState = 108;
+                            else if( buf.prev_state & 0x0020 ) oldThreadState = 109;
+                            else if( buf.prev_state & 0x0040 ) oldThreadState = 110;
+                            else if( buf.prev_state & 0x0080 ) oldThreadState = 102;
                             else                           oldThreadState = 103;
 
                             TracyLfqPrepare( QueueType::ContextSwitch );
                             MemWrite( &item->contextSwitch.time, t0 );
-                            MemWrite( &item->contextSwitch.oldThread, prev_pid );
-                            MemWrite( &item->contextSwitch.newThread, next_pid );
+                            MemWrite( &item->contextSwitch.oldThread, buf.prev_pid );
+                            MemWrite( &item->contextSwitch.newThread, buf.next_pid );
                             MemWrite( &item->contextSwitch.cpu, uint8_t( ring.GetCpu() ) );
                             MemWrite( &item->contextSwitch.oldThreadWaitReason, oldThreadWaitReason );
                             MemWrite( &item->contextSwitch.oldThreadState, oldThreadState );
                             MemWrite( &item->contextSwitch.previousCState, uint8_t( 0 ) );
-                            MemWrite( &item->contextSwitch.newThreadPriority, int8_t( next_prio ) );
-                            MemWrite( &item->contextSwitch.oldThreadPriority, int8_t( prev_prio ) );
+                            MemWrite( &item->contextSwitch.newThreadPriority, int8_t( buf.next_prio ) );
+                            MemWrite( &item->contextSwitch.oldThreadPriority, int8_t( buf.prev_prio ) );
                             TracyLfqCommit;
 
-                            if( cnt > 0 && prev_pid != 0 && CurrentProcOwnsThread( prev_pid ) )
+                            if( cnt > 0 && buf.prev_pid != 0 && CurrentProcOwnsThread( buf.prev_pid ) )
                             {
                                 auto trace = GetCallstackBlock( cnt, ring, traceOffset );
 
                                 TracyLfqPrepare( QueueType::CallstackSampleContextSwitch );
                                 MemWrite( &item->callstackSampleFat.time, t0 );
-                                MemWrite( &item->callstackSampleFat.thread, prev_pid );
+                                MemWrite( &item->callstackSampleFat.thread, buf.prev_pid );
                                 MemWrite( &item->callstackSampleFat.ptr, (uint64_t)trace );
                                 TracyLfqCommit;
                             }
@@ -1478,20 +1475,17 @@ void SysTraceWorker( void* ptr )
 #endif
 
                             TracyLfqPrepare( QueueType::FrameVsync );
-                            MemWrite( &item->frameVsync.id, crtc );
+                            MemWrite( &item->frameVsync.id, uint32_t( crtc ) );
                             MemWrite( &item->frameVsync.time, t0 );
                             TracyLfqCommit;
                         }
 
                         rbPos += hdr.size;
-                        if( rbPos == end[sel] )
+                        pos[sel] = rbPos;
+                        if( !PrimeNext( sel, ring ) )
                         {
-                            memmove( active+selPos, active+selPos+1, sizeof(*active) * ( activeNum - selPos - 1 ) );
+                            active[selPos] = active[activeNum - 1];
                             activeNum--;
-                        }
-                        else
-                        {
-                            pos[sel] = rbPos;
                         }
                     }
                 }
@@ -1580,6 +1574,10 @@ void SysTraceGetExternalName( uint64_t thread, const char*& threadName, const ch
 }
 
 }
+
+#  elif defined __APPLE__
+
+#    include "apple/TracyMach.cpp"
 
 #  endif
 

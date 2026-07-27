@@ -237,9 +237,18 @@ private:
         if( cache->ContainsImage( startAddress ) ) return 0;
 
         const uint32_t headerCount = info->dlpi_phnum;
-        assert( headerCount > 0);
-        const auto endAddress = static_cast<uint64_t>( info->dlpi_addr +
-            info->dlpi_phdr[info->dlpi_phnum - 1].p_vaddr + info->dlpi_phdr[info->dlpi_phnum - 1].p_memsz);
+        assert( headerCount > 0 );
+
+        // headers aren't guaranteed to be in address order; find the max
+        uint64_t endAddress = startAddress;
+        for( uint32_t i=0; i<headerCount; i++ )
+        {
+            const auto& phdr = info->dlpi_phdr[i];
+            if( phdr.p_type != PT_LOAD ) continue;
+
+            const auto phdrEnd = static_cast<uint64_t>( info->dlpi_addr + phdr.p_vaddr + phdr.p_memsz );
+            endAddress = std::max( phdrEnd, endAddress );
+        }
 
         ImageEntry image{};
         image.m_startAddress = startAddress;
@@ -918,7 +927,7 @@ ModuleNameAndBaseAddress GetModuleNameAndPrepareSymbols( uint64_t addr )
     constexpr DWORD flag = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
     HMODULE mod = NULL;
 
-    InitRpmalloc();
+    InitAllocator();
     if( GetModuleHandleExA( flag, (char*)addr, &mod ) != 0 )
     {
         MODULEINFO info;
@@ -997,7 +1006,7 @@ CallstackEntryData DecodeCallstackPtr( uint64_t ptr )
     DBGHELP_LOCK;
 #endif
 
-    InitRpmalloc();
+    InitAllocator();
 
     const ModuleNameAndBaseAddress moduleNameAndAddress = GetModuleNameAndPrepareSymbols( ptr );
 
@@ -1145,7 +1154,7 @@ static FastVector<DebugInfo>* s_di_known;
 struct KernelSymbol
 {
     uint64_t addr;
-    uint32_t size;
+    uint64_t endAddr;
     const char* name;
     const char* mod;
 };
@@ -1226,7 +1235,7 @@ static void InitKernelSymbols()
 
         auto sym = tmpSym.push_next();
         sym->addr = addr;
-        sym->size = 0;
+        sym->endAddr = addr;
         sym->name = strname;
         sym->mod = strmod;
     }
@@ -1237,7 +1246,7 @@ static void InitKernelSymbols()
     std::sort( tmpSym.begin(), tmpSym.end(), []( const KernelSymbol& lhs, const KernelSymbol& rhs ) { return lhs.addr < rhs.addr; } );
     for( size_t i=0; i<tmpSym.size()-1; i++ )
     {
-        if( tmpSym[i].name ) tmpSym[i].size = tmpSym[i+1].addr - tmpSym[i].addr;
+        if( tmpSym[i].name ) tmpSym[i].endAddr = tmpSym[i+1].addr;
     }
 
     s_kernelSymCnt = validCnt;
@@ -1314,7 +1323,7 @@ void InitCallstackCritical()
 
 void InitCallstack()
 {
-    InitRpmalloc();
+    InitAllocator();
 
 #ifdef TRACY_HAS_DL_ITERATE_PHDR_TO_REFRESH_IMAGE_CACHE
     CreateImageCaches();
@@ -1780,7 +1789,7 @@ CallstackEntryData DecodeCallstackPtrExternal( uint64_t ptr )
 
 CallstackEntryData DecodeCallstackPtr( uint64_t ptr )
 {
-    InitRpmalloc();
+    InitAllocator();
     if( !IsKernelAddress( ptr ) )
     {
 #ifdef __linux__
@@ -1825,13 +1834,13 @@ CallstackEntryData DecodeCallstackPtr( uint64_t ptr )
 #ifdef __linux
     else if( s_kernelSym )
     {
-        auto it = std::lower_bound( s_kernelSym, s_kernelSym + s_kernelSymCnt, ptr, []( const KernelSymbol& lhs, const uint64_t& rhs ) { return lhs.addr + lhs.size < rhs; } );
+        auto it = std::lower_bound( s_kernelSym, s_kernelSym + s_kernelSymCnt, ptr, []( const KernelSymbol& lhs, const uint64_t& rhs ) { return lhs.endAddr < rhs; } );
         if( it != s_kernelSym + s_kernelSymCnt )
         {
             cb_data[0].name = CopyStringFast( it->name );
             cb_data[0].file = CopyStringFast( "<kernel>" );
             cb_data[0].line = 0;
-            cb_data[0].symLen = it->size;
+            cb_data[0].symLen = it->endAddr - it->addr;
             cb_data[0].symAddr = it->addr;
             return { cb_data, 1, it->mod ? it->mod : "<kernel>" };
         }

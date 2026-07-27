@@ -13,6 +13,7 @@ void View::DrawMessages()
 
     const auto scale = GetScale();
     ImGui::SetNextWindowSize( ImVec2( 1200 * scale, 600 * scale ), ImGuiCond_FirstUseEver );
+    m_messagesConstraint.Constrain();
     ImGui::Begin( "Messages", &m_showMessages );
     if( ImGui::GetCurrentWindowRead()->SkipItems ) { ImGui::End(); return; }
 
@@ -137,6 +138,9 @@ void View::DrawMessages()
         ImGui::Checkbox( ICON_FA_IMAGE " Show frame images", &m_showMessageImages );
     }
 
+    m_messagesConstraint.MarkMinWidth();
+    UpdateThreadOrder();
+
     bool threadsChanged = false;
     ImGui::AlignTextToFramePadding();
     auto expand = ImGui::TreeNodeEx( ICON_FA_SHUFFLE " Visible threads:", ImGuiTreeNodeFlags_SpanLabelWidth );
@@ -196,10 +200,32 @@ void View::DrawMessages()
     if( expand )
     {
         auto& crash = m_worker.GetCrashEvent();
+
+        const auto& style = ImGui::GetStyle();
+        const auto cntWidth = ImGui::CalcTextSize( "(1234)" ).x;
+        float probe = 0;
+        for( auto& t : m_threadOrder )
+        {
+            if( t->messages.empty() ) continue;
+            float w = ImGui::GetFrameHeight() * 2 + ImGui::CalcTextSize( m_worker.GetThreadName( t->id ) ).x + cntWidth + style.ItemSpacing.x * 3;
+            if( crash.thread == t->id ) w += style.ItemSpacing.x + ImGui::CalcTextSize( ICON_FA_SKULL " Crashed" ).x;
+            if( t->isFiber ) w += style.ItemSpacing.x + ImGui::CalcTextSize( "Fiber" ).x;
+            probe = std::max( probe, w );
+        }
+        const auto MinWidth = std::max( 150 * GetScale(), probe );
+        const int cols = std::max( 1, int( ImGui::GetContentRegionAvail().x / MinWidth ) );
+
+        const auto rows = ( tsz + cols - 1 ) / cols;
+        const auto rowsVisible = std::min<float>( rows, 7.5f );
+        const auto rowsHeight = ImGui::GetTextLineHeightWithSpacing() * rowsVisible;
+        ImGui::BeginChild( "###msgthreadrows", ImVec2( -1, rowsHeight ) );
+
         int idx = 0;
+        ImGui::BeginTable( "##msgthreadcols", cols, ImGuiTableFlags_NoSavedSettings );
         for( const auto& t : m_threadOrder )
         {
             if( t->messages.empty() ) continue;
+            ImGui::TableNextColumn();
             ImGui::PushID( idx++ );
             const auto threadColor = GetThreadColor( t->id, 0 );
             SmallColorBox( threadColor );
@@ -222,6 +248,8 @@ void View::DrawMessages()
                 TextColoredUnformatted( ImVec4( 0.2f, 0.6f, 0.2f, 1.f ), "Fiber" );
             }
         }
+        ImGui::EndTable();
+        ImGui::EndChild();
         ImGui::TreePop();
     }
 
@@ -344,7 +372,6 @@ void View::DrawMessageLine( const MessageData& msg, bool hasCallstack, int& idx 
         m_msgToFocus.Decay( nullptr );
         m_messagesScrollBottom = false;
     }
-    ImGui::PopID();
     ImGui::TableNextColumn();
     SmallColorBox( GetThreadColor( tid, 0 ) );
     ImGui::SameLine();
@@ -373,17 +400,28 @@ void View::DrawMessageLine( const MessageData& msg, bool hasCallstack, int& idx 
         ImGui::EndTooltip();
     }
     ImGui::PopStyleColor();
+    if( ImGui::IsItemClicked( ImGuiMouseButton_Right ) ) ImGui::OpenPopup( "MessageContext" );
+    if( ImGui::BeginPopup( "MessageContext" ) )
+    {
+        if( ImGui::Selectable( ICON_FA_CLIPBOARD " Copy message" ) )
+        {
+            ImGui::SetClipboardText( text );
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     if( hasCallstack )
     {
         ImGui::TableNextColumn();
         const auto cs = msg.callstack.Val();
         if( cs != 0 )
         {
-            SmallCallstackButton( ICON_FA_ALIGN_JUSTIFY, cs, idx );
+            SmallCallstackButton( ICON_FA_ALIGN_JUSTIFY, cs, idx, tid );
             ImGui::SameLine();
             DrawCallstackCalls( cs, 6 );
         }
     }
+    ImGui::PopID();
 }
 
 }

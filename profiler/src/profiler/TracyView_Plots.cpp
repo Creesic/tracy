@@ -88,7 +88,7 @@ bool View::DrawPlot( const TimelineContext& ctx, PlotData& plot, const std::vect
                         draw->AddRectFilled( dpos + ImVec2( px, offset + PlotHeight ), dpos + ImVec2( x, offset + py ), fill );
                     }
                     const ImVec2 data[3] = { dpos + ImVec2( px, offset + py ), dpos + ImVec2( x, offset + py ), dpos + ImVec2( x, offset + y ) };
-                    draw->AddPolyline( data, 3, color, 0, 1.0f );
+                    draw->AddPolyline( data, 3, color, 1.0f );
                 }
                 else
                 {
@@ -335,6 +335,8 @@ void View::DrawPlotPoint( const ImVec2& wpos, float x, float y, int offset, uint
                         ImGui::SameLine();
                         ImGui::TextDisabled( "(this event)" );
                     }
+                    auto csAlloc = ev->CsAlloc();
+                    if( csAlloc != 0 ) DrawCallstackCalls( csAlloc, 4 );
                     if( ev->TimeFree() < 0 )
                     {
                         ImGui::TextUnformatted( "Allocation still active" );
@@ -347,6 +349,8 @@ void View::DrawPlotPoint( const ImVec2& wpos, float x, float y, int offset, uint
                             ImGui::SameLine();
                             TextDisabledUnformatted( "(this event)" );
                         }
+                        auto csFree = ev->csFree.Val();
+                        if( csFree != 0 ) DrawCallstackCalls( csFree, 4 );
                         TextFocused( "Duration:", TimeToString( ev->TimeFree() - ev->TimeAlloc() ) );
                     }
                     uint64_t tid;
@@ -371,7 +375,7 @@ void View::DrawPlotPoint( const ImVec2& wpos, float x, float y, int offset, uint
                     m_memoryAllocHover = std::distance( mem.data.begin(), ev );
                     m_memoryAllocHoverWait = 2;
                     m_memoryAllocHoverPool = name;
-                    if( IsMouseClicked( 0 ) )
+                    if( IsMouseClicked( ImGuiMouseButton_Left ) )
                     {
                         m_memoryAllocInfoWindow = m_memoryAllocHover;
                         m_memoryAllocInfoPool = name;

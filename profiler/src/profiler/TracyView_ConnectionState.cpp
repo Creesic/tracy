@@ -105,7 +105,7 @@ bool View::DrawConnection()
     }
 
     ImGui::Separator();
-    if( ImGui::Button( ICON_FA_FLOPPY_DISK " Save trace" ) && m_saveThreadState.load( std::memory_order_relaxed ) == SaveThreadState::Inert )
+    if( ImGui::Button( ICON_FA_FLOPPY_DISK " Save trace…" ) && m_saveThreadState.load( std::memory_order_relaxed ) == SaveThreadState::Inert )
     {
         auto cb = [this]( const char* fn ) {
             const auto sz = strlen( fn );
@@ -203,21 +203,33 @@ bool View::DrawConnection()
                         ImGui::TextUnformatted( m_worker.GetString( p.name ) );
                         ImGui::TableNextColumn();
                         ImGui::PushID( idx );
-                        if( p.isBool )
+                        switch( p.type )
+                        {
+                        case ParameterType::Boolean:
                         {
                             bool val = p.val;
                             if( ImGui::Checkbox( "", &val ) )
                             {
                                 m_worker.SetParameter( idx, int32_t( val ) );
                             }
+                            break;
                         }
-                        else
+                        case ParameterType::Integer:
                         {
                             auto val = int( p.val );
+                            ImGui::SetNextItemWidth( 100 * GetScale() );
                             if( ImGui::InputInt( "", &val, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue ) )
                             {
                                 m_worker.SetParameter( idx, int32_t( val ) );
                             }
+                            break;
+                        }
+                        case ParameterType::Trigger:
+                            if( ImGui::Button( ICON_FA_CIRCLE_DOT ) )
+                            {
+                                m_worker.SetParameter( idx, p.val );
+                            }
+                            break;
                         }
                         ImGui::PopID();
                         idx++;

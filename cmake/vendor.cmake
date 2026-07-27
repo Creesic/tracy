@@ -8,11 +8,17 @@ set (ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../")
 include(FindPkgConfig)
 include(${CMAKE_CURRENT_LIST_DIR}/CPM.cmake)
 
+if(APPLE AND BUNDLE)
+    set(DLOPT ON)
+else()
+    set(DLOPT OFF)
+endif()
+
 option(DOWNLOAD_CAPSTONE "Force download capstone" ON)
-option(DOWNLOAD_GLFW "Force download glfw" OFF)
-option(DOWNLOAD_FREETYPE "Force download freetype" OFF)
+option(DOWNLOAD_GLFW "Force download glfw" ${DLOPT})
+option(DOWNLOAD_FREETYPE "Force download freetype" ${DLOPT})
 option(DOWNLOAD_LIBCURL "Force download libcURL" OFF)
-option(DOWNLOAD_PUGIXML "Force download pugixml" OFF)
+option(DOWNLOAD_PUGIXML "Force download pugixml" ${DLOPT})
 
 # capstone
 
@@ -26,7 +32,7 @@ else()
     CPMAddPackage(
         NAME capstone
         GITHUB_REPOSITORY capstone-engine/capstone
-        GIT_TAG 6.0.0-Alpha7
+        GIT_TAG 6.0.0-Alpha10
         OPTIONS
             "CAPSTONE_X86_ATT_DISABLE ON"
             "CAPSTONE_ALPHA_SUPPORT OFF"
@@ -98,6 +104,10 @@ else()
         OPTIONS
             "FT_DISABLE_HARFBUZZ ON"
             "FT_WITH_HARFBUZZ OFF"
+            "FT_DISABLE_ZLIB ON"
+            "FT_DISABLE_BZIP2 ON"
+            "FT_DISABLE_PNG ON"
+            "FT_DISABLE_BROTLI ON"
         EXCLUDE_FROM_ALL TRUE
     )
     add_library(TracyFreetype INTERFACE)
@@ -137,11 +147,14 @@ target_include_directories(TracyGetOpt PUBLIC ${GETOPT_DIR})
 CPMAddPackage(
     NAME ImGui
     GITHUB_REPOSITORY ocornut/imgui
-    GIT_TAG v1.92.7-docking
+    GIT_TAG v1.92.9-docking
     DOWNLOAD_ONLY TRUE
     PATCHES
         "${CMAKE_CURRENT_LIST_DIR}/imgui-emscripten.patch"
         "${CMAKE_CURRENT_LIST_DIR}/imgui-loader.patch"
+        "${CMAKE_CURRENT_LIST_DIR}/imgui-no-samplers.patch"
+        "${CMAKE_CURRENT_LIST_DIR}/imgui-no-default-font.patch"
+        "${CMAKE_CURRENT_LIST_DIR}/imgui-macos-clipboard.patch"
 )
 
 set(IMGUI_SOURCES
@@ -172,6 +185,10 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(TracyImGui PRIVATE "IMGUI_DISABLE_DEBUG_TOOLS" "IMGUI_DISABLE_DEMO_WINDOWS")
 endif()
 
+if(APPLE)
+    target_link_libraries(TracyImGui PUBLIC "-framework ApplicationServices")
+endif()
+
 # NFD
 
 if(NOT NO_FILESELECTOR AND NOT EMSCRIPTEN)
@@ -184,9 +201,10 @@ if(NOT NO_FILESELECTOR AND NOT EMSCRIPTEN)
     CPMAddPackage(
         NAME nfd
         GITHUB_REPOSITORY btzy/nativefiledialog-extended
-        GIT_TAG v1.3.0
+        GIT_TAG 3cd252a8f7ca32419b1ca235c2990ba6a0ecba7c
         EXCLUDE_FROM_ALL TRUE
         OPTIONS
+            "BUILD_SHARED_LIBS OFF"
             "NFD_PORTAL ${NFD_PORTAL}"
     )
 endif()
@@ -199,6 +217,7 @@ CPMAddPackage(
     VERSION 1.0.6
     PATCHES
         "${CMAKE_CURRENT_LIST_DIR}/ppqsort-nodebug.patch"
+        "${CMAKE_CURRENT_LIST_DIR}/ppqsort-semaphore.patch"
     EXCLUDE_FROM_ALL TRUE
 )
 
@@ -216,7 +235,9 @@ CPMAddPackage(
 CPMAddPackage(
     NAME md4c
     GITHUB_REPOSITORY mity/md4c
-    GIT_TAG release-0.5.2
+    GIT_TAG 65c6c9d72cebd9a731aaa5597414ce04d9ea5de3
+    OPTIONS
+        "BUILD_SHARED_LIBS OFF"
     EXCLUDE_FROM_ALL TRUE
 )
 
@@ -253,7 +274,7 @@ if(NOT EMSCRIPTEN)
     CPMAddPackage(
         NAME usearch
         GITHUB_REPOSITORY unum-cloud/usearch
-        GIT_TAG v2.23.0
+        GIT_TAG v2.26.0
         EXCLUDE_FROM_ALL TRUE
     )
 
@@ -268,7 +289,7 @@ if(NOT EMSCRIPTEN)
         CPMAddPackage(
             NAME pugixml
             GITHUB_REPOSITORY zeux/pugixml
-            GIT_TAG v1.15
+            GIT_TAG v1.16
             EXCLUDE_FROM_ALL TRUE
         )
         add_library(TracyPugixml INTERFACE)
@@ -286,13 +307,17 @@ if(NOT EMSCRIPTEN)
         CPMAddPackage(
             NAME libcurl
             GITHUB_REPOSITORY curl/curl
-            GIT_TAG curl-8_19_0
+            GIT_TAG curl-8_21_0
             OPTIONS
                 "BUILD_STATIC_LIBS ON"
                 "BUILD_SHARED_LIBS OFF"
                 "HTTP_ONLY ON"
                 "CURL_ZSTD OFF"
                 "CURL_USE_LIBPSL OFF"
+                "CURL_USE_LIBSSH2 OFF"
+                "CURL_BROTLI OFF"
+                "USE_NGHTTP2 OFF"
+                "USE_LIBIDN2 OFF"
             EXCLUDE_FROM_ALL TRUE
         )
         add_library(TracyLibcurl INTERFACE)

@@ -52,6 +52,9 @@ void LoadConfig()
     if( ini_sget( ini, "llm", "limitToolReplySize", "%d", &v ) ) s_config.llmLimitToolReplySize = v;
     if( ini_sget( ini, "llm", "maxToolReplySizeValue", "%d", &v ) ) s_config.llmMaxToolReplySizeValue = v;
     if( ini_sget( ini, "llm", "separateFastModel", "%d", &v ) ) s_config.llmSeparateFastModel = v;
+    if( ini_sget( ini, "llm", "summary", "%d", &v ) ) s_config.llmSummary = v;
+    if( ini_sget( ini, "llm", "suggestion", "%d", &v ) ) s_config.llmSuggestion = v;
+    if( ini_sget( ini, "llm", "personality", "%d", &v ) ) s_config.llmPersonality = v;
     if( ini_sget( ini, "llm", "integratorMcpEnabled", "%d", &v ) ) s_config.llmIntegratorMcpEnabled = v;
     if( ini_sget( ini, "llm", "integratorMcpPort", "%d", &v ) && v > 0 && v < 65536 ) s_config.llmIntegratorMcpPort = v;
     if( v2 = ini_get( ini, "llm", "integratorNode" ); v2 ) s_config.llmIntegratorNode = v2;
@@ -111,6 +114,9 @@ bool SaveConfig()
     fprintf( f, "limitToolReplySize = %i\n", (int)s_config.llmLimitToolReplySize );
     fprintf( f, "maxToolReplySizeValue = %i\n", s_config.llmMaxToolReplySizeValue );
     fprintf( f, "separateFastModel = %i\n", (int)s_config.llmSeparateFastModel );
+    fprintf( f, "summary = %i\n", (int)s_config.llmSummary );
+    fprintf( f, "suggestion = %i\n", (int)s_config.llmSuggestion );
+    fprintf( f, "personality = %i\n", s_config.llmPersonality );
     fprintf( f, "integratorMcpEnabled = %i\n", (int)s_config.llmIntegratorMcpEnabled );
     fprintf( f, "integratorMcpPort = %i\n", s_config.llmIntegratorMcpPort );
     fprintf( f, "integratorNode = %s\n", s_config.llmIntegratorNode.c_str() );
