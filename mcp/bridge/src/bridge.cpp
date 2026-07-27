@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <cstring>
@@ -28,7 +29,11 @@
 #include "../../server/TracyFileRead.hpp"
 #include "../../server/TracyWorker.hpp"
 
-namespace {
+#include "bridge_api.hpp"
+#include "McpStreamableHttp.hpp"
+
+namespace tracy_mcp_bridge
+{
 
 std::unique_ptr<tracy::Worker> g_worker;
 std::string g_openPath;
@@ -620,6 +625,7 @@ nlohmann::json HandleMetadata( const nlohmann::json& p )
         { "captureProgram", w->GetCaptureProgram() },
         { "captureTime", w->GetCaptureTime() },
         { "pid", w->GetPid() },
+        { "pidInfo", "OS process id of the profiled application in this capture (one stable value for the file). It is not a frame id, not a per-frame value, and not a substitute for list_frames index or guiFrameNumber." },
         { "resolution", w->GetResolution() },
         { "samplingPeriod", w->GetSamplingPeriod() },
         { "zoneCount", w->GetZoneCount() },
@@ -2076,9 +2082,16 @@ nlohmann::json Dispatch( const std::string& method, const nlohmann::json& params
 
 }
 
-int main()
+#if defined( TRACY_MCP_BRIDGE_STANDALONE )
+int main( int, char** )
 {
     std::ios::sync_with_stdio( false );
+    if( const char* p = std::getenv( "TRACY_MCP_HTTP_PORT" ) )
+    {
+        if( *p && tracy::mcp::RunStreamableHttp( p, std::getenv( "TRACY_MCP_HTTP_HOST" ) ) ) return 0;
+        if( *p ) return 1;
+    }
+
     std::string line;
     while( std::getline( std::cin, line ) )
     {
@@ -2090,13 +2103,13 @@ int main()
         }
         catch( ... )
         {
-            WriteLine( { { "id", nullptr }, { "error", "invalid json" } } );
+            tracy_mcp_bridge::WriteLine( { { "id", nullptr }, { "error", "invalid json" } } );
             continue;
         }
         const auto id = req.contains( "id" ) ? req["id"] : nlohmann::json( nullptr );
         const std::string method = req.value( "method", "" );
         nlohmann::json params = req.contains( "params" ) ? req["params"] : nlohmann::json::object();
-        nlohmann::json res = Dispatch( method, params );
+        nlohmann::json res = tracy_mcp_bridge::Dispatch( method, params );
         nlohmann::json out = { { "id", id } };
         if( res.contains( "ok" ) && res["ok"].get<bool>() )
         {
@@ -2106,7 +2119,8 @@ int main()
         {
             out["error"] = res.contains( "error" ) ? res["error"] : "unknown error";
         }
-        WriteLine( out );
+        tracy_mcp_bridge::WriteLine( out );
     }
     return 0;
 }
+#endif

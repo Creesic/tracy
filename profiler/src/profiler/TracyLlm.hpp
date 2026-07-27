@@ -132,6 +132,7 @@ private:
     char m_integratorScriptUsed[IntegratorPathBuf] = {};
 
     bool m_integratorMcpRunning = false;
+    bool m_integratorMcpEmbedded = false;
 #ifdef _WIN32
     uint64_t m_integratorProcessHandle = 0;
 #else

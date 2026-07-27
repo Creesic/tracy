@@ -71,15 +71,16 @@ export function resolveBridgeExecutable(tracyRoot: string): string | null {
   return null;
 }
 
-/** Bridge accepts 0-based frame_index and/or gui_frame_number (Tracy title bar); on-demand captures often differ. */
+/** Bridge accepts 0-based frame_index and/or gui_frame_number (Tracy’s per-frame display label in the file; not metadata pid). */
 const frameKeySingle = {
-  frame_index: z.number().int().nonnegative().optional().describe("0-based in capture, same as list_frames index"),
+  frame_index: z.number().int().nonnegative().optional()
+    .describe("Default: 0-based order in the opened capture — same as list_frames → index (use for most tool calls)"),
   gui_frame_number: z
     .number()
     .int()
     .nonnegative()
     .optional()
-    .describe("Tracy title bar / strip number — prefer this if you only know the GUI label"),
+    .describe("Tracy frame label (top bar) for that row when it differs from index, e.g. on-demand+frameOffset — not the profiled app pid in metadata"),
   display_frame_number: z.number().int().nonnegative().optional().describe("Alias for gui_frame_number"),
 };
 
@@ -133,7 +134,7 @@ export function registerTraceTools(mcp: McpServer, bridge: TracyBridgeClient | n
     "get_capture_metadata",
     {
       description:
-        "Metadata for the open capture: counts, frame sets (with isMain), memory pools, frameOffset, onDemand, and frameNumbering note (how guiFrameNumber relates to Tracy’s top bar vs 0-based frame_index). Prefer summary_only or small caps on huge traces.",
+        "Metadata: counts, frame sets, memory pools, frameOffset, onDemand, frameNumbering. `pid` is the profiled app’s OS process id (one value per file; not a per-frame id) — see `pidInfo`. Prefer summary_only or small caps on huge traces.",
       inputSchema: {
         summary_only: z.boolean().optional().default(false),
         frame_sets_max: z.number().int().positive().max(10000).optional().default(256),
@@ -187,7 +188,7 @@ export function registerTraceTools(mcp: McpServer, bridge: TracyBridgeClient | n
     "get_tracy_view_context",
     {
       description:
-        "Explains what this MCP can and cannot mirror vs the live Tracy app: it reads a .tracy file; it does not control zoom, view span, or next/prev in the running GUI, but you can still align on guiFrameNumber and startNs/endNs. Also returns firstTime/lastTime and frame offset flags.",
+        "Live GUI vs this MCP: reads a .tracy file; does not control zoom, span, or next/prev. Align frames via list_frames (fixed index + guiFrameNumber per row). Metadata `pid` is the profiled app process id (stable), not a 60 Hz or per-frame token.",
       inputSchema: {},
     },
     async () => textJson(await br(bridge, "view.context", {})),
@@ -210,7 +211,7 @@ export function registerTraceTools(mcp: McpServer, bridge: TracyBridgeClient | n
     "compare_frames",
     {
       description:
-        "Compare CPU zone time aggregates between two frame indices (by source location). You may use gui_frame_number_a/b (Tracy title bar) **instead of** frame_index_a/b when on-demand/offset means the bar number is not the capture index. Prefer small top_changes on large captures. Bridge stops after max_timeline_visits (default 50M; 0 = unlimited).",
+        "Compare CPU zone aggregates. Default: frame_index_a/b = list_frames indices. Use gui_frame_number_a/b when the Tracy label differs from those indices. Prefer small top_changes on large captures. max_timeline_visits (default 50M; 0 = unlimited).",
       inputSchema: {
         frame_set: z.number().int().nonnegative().optional().default(0),
         ...frameKeyPairA,
@@ -266,7 +267,7 @@ export function registerTraceTools(mcp: McpServer, bridge: TracyBridgeClient | n
     "summarize_frame",
     {
       description:
-        "Top CPU and GPU zones for one frame. **Prefer `gui_frame_number` (Tracy title bar) over `frame_index` when the user reads a large frame number** — on on-demand captures the bar is not the 0-based index. Omitted index defaults to frame 0. max_timeline_visits caps work (default 50M; 0 = unlimited).",
+        "Top CPU and GPU zones for one frame. Default: `frame_index` = list_frames `index`. Add `gui_frame_number` when the user’s title-bar number is not the same as that index (on-demand, frameOffset) — do not confuse with metadata `pid` (process id, constant). Omitted index defaults to frame 0. max_timeline_visits (default 50M; 0 = unlimited).",
       inputSchema: {
         frame_set: z.number().int().nonnegative().optional().default(0),
         ...frameKeySingle,

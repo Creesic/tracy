@@ -127,6 +127,14 @@ endif()
 
 list(TRANSFORM SERVER_FILES PREPEND "src/profiler/")
 
+set( MCP_EMBED_SRC "" )
+if( NOT EMSCRIPTEN )
+    set( MCP_EMBED_SRC
+        ${CMAKE_CURRENT_LIST_DIR}/../mcp/bridge/src/bridge.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/../mcp/bridge/src/McpStreamableHttp.cpp
+    )
+endif()
+
 set(PROFILER_FILES
     src/ConnectionHistory.cpp
     src/Filters.cpp
@@ -231,10 +239,10 @@ if(WIN32)
         win32/Tracy.manifest
         win32/Tracy.rc
     )
-    add_executable(${PROJECT_NAME} WIN32 ${PROFILER_FILES} ${COMMON_FILES} ${SERVER_FILES})
+    add_executable(${PROJECT_NAME} WIN32 ${PROFILER_FILES} ${COMMON_FILES} ${SERVER_FILES} ${MCP_EMBED_SRC} )
     set_property(DIRECTORY ${CMAKE_CURRENT_LIST_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 else()
-    add_executable(${PROJECT_NAME} ${PROFILER_FILES} ${COMMON_FILES} ${SERVER_FILES})
+    add_executable(${PROJECT_NAME} ${PROFILER_FILES} ${COMMON_FILES} ${SERVER_FILES} ${MCP_EMBED_SRC} )
 endif()
 
 find_package(Threads REQUIRED)
@@ -260,6 +268,14 @@ if(NOT EMSCRIPTEN)
         TracyPugixml
         usearch
     )
+    target_include_directories( ${PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../mcp/bridge/src
+        ${CMAKE_CURRENT_LIST_DIR}/../mcp/bridge/third_party
+    )
+    target_compile_definitions( ${PROJECT_NAME} PRIVATE TRACY_MCP_EMBEDDED=1 )
+    if( WIN32 )
+        target_link_libraries( ${PROJECT_NAME} PRIVATE ws2_32 )
+    endif()
 endif()
 
 add_git_ref(${PROJECT_NAME})

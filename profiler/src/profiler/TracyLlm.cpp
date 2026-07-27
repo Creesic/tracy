@@ -30,6 +30,9 @@
 #include "TracyWorker.hpp"
 #include "../Fonts.hpp"
 #include "../public/common/TracySystem.hpp"
+#if defined( TRACY_MCP_EMBEDDED )
+#include "McpStreamableHttp.hpp"
+#endif
 
 #include "data/SystemPrompt.hpp"
 #include "data/ToolsJson.hpp"
@@ -147,6 +150,41 @@ bool ResolveIntegratorPaths( std::string& outScript, std::string& outRepo, char*
     }
 
     snprintf( err, errLen, "Could not find mcp/integrator/dist/index.js next to this profiler. Build it (npm run build in mcp/integrator) or set \"Tracy root\" under Advanced." );
+    return false;
+}
+
+bool FindNativeMcpBridgeExecutable( std::string& outExe )
+{
+#ifdef _WIN32
+    static const char kBridge[] = "tracy-mcp-bridge.exe";
+#else
+    static const char kBridge[] = "tracy-mcp-bridge";
+#endif
+    if( !s_config.llmIntegratorBridge.empty() && FileExists( s_config.llmIntegratorBridge.c_str() ) )
+    {
+        outExe = s_config.llmIntegratorBridge;
+        return true;
+    }
+    const std::string exep = GetExecutablePath();
+    if( exep.empty() ) return false;
+    std::string walk = ParentPath( exep );
+    for( int i = 0; i < 24 && !walk.empty(); ++i )
+    {
+        outExe = JoinUnder( walk, kBridge );
+        if( FileExists( outExe.c_str() ) ) return true;
+#ifdef _WIN32
+        outExe = JoinUnder( walk, "mcp/bridge/build/Release/tracy-mcp-bridge.exe" );
+        if( FileExists( outExe.c_str() ) ) return true;
+        outExe = JoinUnder( walk, "mcp/bridge/build/Debug/tracy-mcp-bridge.exe" );
+        if( FileExists( outExe.c_str() ) ) return true;
+#else
+        outExe = JoinUnder( walk, "mcp/bridge/build/tracy-mcp-bridge" );
+        if( FileExists( outExe.c_str() ) ) return true;
+#endif
+        const std::string next = ParentPath( walk );
+        if( next == walk ) break;
+        walk = next;
+    }
     return false;
 }
 
@@ -547,7 +585,7 @@ void TracyLlm::Draw()
 
         if( ImGui::TreeNode( ICON_FA_NETWORK_WIRED " Integrator MCP" ) )
         {
-            ImGui::TextUnformatted( "Runs a local Node server for MCP clients. Requires Node.js and a built integrator (npm run build in mcp/integrator)." );
+            ImGui::TextUnformatted( "MCP for external clients. Prefer the native tracy-mcp-bridge (ship next to the app or use a local build) — no Node. Optional: set \"Integrator script\" for the Node mcp/integrator (npm run build)." );
             ImGui::Spacing();
 
             if( ImGui::Checkbox( "Enable MCP server", &s_config.llmIntegratorMcpEnabled ) )
@@ -1594,6 +1632,10 @@ void TracyLlm::SyncIntegratorFieldsFromConfig()
 
 void TracyLlm::StopIntegratorMcpProcess()
 {
+#if defined( TRACY_MCP_EMBEDDED )
+    tracy::mcp::StopStreamableHttpInBackground();
+    m_integratorMcpEmbedded = false;
+#endif
 #ifdef _WIN32
     if( m_integratorProcessHandle )
     {
@@ -1620,12 +1662,174 @@ bool TracyLlm::StartIntegratorMcpProcess()
 {
     if( m_integratorMcpRunning ) return true;
 
+    std::string tracyRoot = s_config.llmIntegratorTracyRoot;
+    while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
+    {
+        if( tracyRoot.empty() )
+        {
+            const std::string ex = GetExecutablePath();
+            if( !ex.empty() )
+            {
+                std::string walk = ParentPath( ex );
+                for( int k = 0; k < 16 && !walk.empty(); ++k )
+                {
+                    if( FileExists( JoinUnder( walk, "manual/tracy.md" ).c_str() ) || FileExists( JoinUnder( walk, "manual\\tracy.md" ).c_str() ) )
+                    {
+                        tracyRoot = walk;
+                        break;
+                    }
+                    const std::string n = ParentPath( walk );
+                    if( n == walk ) break;
+                    walk = n;
+                }
+            }
+        }
+    }
+    while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
+
+    const std::string portStr = std::to_string( s_config.llmIntegratorMcpPort );
+
+#if defined( TRACY_MCP_EMBEDDED )
+    if( s_config.llmIntegratorScript.empty() )
+    {
+#ifdef _WIN32
+        _putenv_s( "TRACY_MCP_HTTP_PORT", portStr.c_str() );
+        SetEnvironmentVariableA( "TRACY_MCP_BRIDGE", NULL );
+        if( !tracyRoot.empty() ) _putenv_s( "TRACY_ROOT", tracyRoot.c_str() );
+#else
+        if( setenv( "TRACY_MCP_HTTP_PORT", portStr.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_MCP_HTTP_PORT failed." );
+            return false;
+        }
+        if( !tracyRoot.empty() && setenv( "TRACY_ROOT", tracyRoot.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_ROOT failed." );
+            return false;
+        }
+        unsetenv( "TRACY_MCP_BRIDGE" );
+#endif
+        if( tracy::mcp::StartStreamableHttpInBackground( s_config.llmIntegratorMcpPort, "127.0.0.1" ) )
+        {
+            m_integratorMcpEmbedded = true;
+            m_integratorMcpRunning = true;
+            const std::string exel = GetExecutablePath();
+            const char* tag = exel.empty() ? "tracy.exe (embedded MCP)" : exel.c_str();
+            snprintf( m_integratorScriptUsed, sizeof( m_integratorScriptUsed ), "%s", tag );
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Embedded native MCP — http://127.0.0.1:%d/mcp",
+                s_config.llmIntegratorMcpPort );
+            return true;
+        }
+        if( tracy::mcp::IsStreamableHttpMcpRunning() )
+        {
+            m_integratorMcpEmbedded = true;
+            m_integratorMcpRunning = true;
+            const std::string exel = GetExecutablePath();
+            const char* tag = exel.empty() ? "tracy.exe (embedded MCP)" : exel.c_str();
+            snprintf( m_integratorScriptUsed, sizeof( m_integratorScriptUsed ), "%s", tag );
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Embedded native MCP — http://127.0.0.1:%d/mcp",
+                s_config.llmIntegratorMcpPort );
+            return true;
+        }
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ),
+            "Embedded MCP could not listen (port %d in use?). Trying external tracy-mcp-bridge or Node…", s_config.llmIntegratorMcpPort );
+    }
+#endif
+
+#if defined( TRACY_MCP_EMBEDDED )
+    if( s_config.llmIntegratorScript.empty() && tracy::mcp::IsStreamableHttpMcpRunning() )
+    {
+        m_integratorMcpEmbedded = true;
+        m_integratorMcpRunning = true;
+        const std::string exel = GetExecutablePath();
+        const char* tag = exel.empty() ? "tracy.exe (embedded MCP)" : exel.c_str();
+        snprintf( m_integratorScriptUsed, sizeof( m_integratorScriptUsed ), "%s", tag );
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Embedded native MCP — http://127.0.0.1:%d/mcp",
+            s_config.llmIntegratorMcpPort );
+        return true;
+    }
+#endif
+
+    std::string nativeBridge;
+    const bool tryNative = s_config.llmIntegratorScript.empty() && FindNativeMcpBridgeExecutable( nativeBridge );
+
+    if( tryNative )
+    {
+#ifdef _WIN32
+        _putenv_s( "TRACY_MCP_HTTP_PORT", portStr.c_str() );
+        SetEnvironmentVariableA( "TRACY_MCP_BRIDGE", NULL );
+        if( !tracyRoot.empty() ) _putenv_s( "TRACY_ROOT", tracyRoot.c_str() );
+        {
+            const size_t n = nativeBridge.size() < sizeof( m_integratorScriptUsed ) - 1 ? nativeBridge.size() : sizeof( m_integratorScriptUsed ) - 1;
+            memcpy( m_integratorScriptUsed, nativeBridge.c_str(), n );
+            m_integratorScriptUsed[n] = '\0';
+        }
+
+        std::vector<char> cmdBuf( nativeBridge.begin(), nativeBridge.end() );
+        cmdBuf.push_back( '\0' );
+
+        STARTUPINFOA siN = {};
+        siN.cb = sizeof( siN );
+        PROCESS_INFORMATION piN = {};
+        const char* cwdN = tracyRoot.empty() ? NULL : tracyRoot.c_str();
+        if( !CreateProcessA( nativeBridge.c_str(), cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, cwdN, &siN, &piN ) )
+        {
+            const DWORD err = GetLastError();
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "CreateProcess (native tracy-mcp-bridge) failed (error %lu).", (unsigned long)err );
+            m_integratorScriptUsed[0] = '\0';
+            return false;
+        }
+        CloseHandle( piN.hThread );
+        m_integratorProcessHandle = (uint64_t)(uintptr_t)piN.hProcess;
+        m_integratorMcpRunning = true;
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Native MCP — PID %lu — http://127.0.0.1:%d/mcp", (unsigned long)piN.dwProcessId, s_config.llmIntegratorMcpPort );
+        return true;
+#else
+        if( setenv( "TRACY_MCP_HTTP_PORT", portStr.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_MCP_HTTP_PORT failed." );
+            return false;
+        }
+        if( !tracyRoot.empty() && setenv( "TRACY_ROOT", tracyRoot.c_str(), 1 ) != 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "setenv TRACY_ROOT failed." );
+            return false;
+        }
+        unsetenv( "TRACY_MCP_BRIDGE" );
+        {
+            const size_t n = nativeBridge.size() < sizeof( m_integratorScriptUsed ) - 1 ? nativeBridge.size() : sizeof( m_integratorScriptUsed ) - 1;
+            memcpy( m_integratorScriptUsed, nativeBridge.c_str(), n );
+            m_integratorScriptUsed[n] = '\0';
+        }
+        const pid_t pidN = fork();
+        if( pidN < 0 )
+        {
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "fork() failed." );
+            m_integratorScriptUsed[0] = '\0';
+            return false;
+        }
+        if( pidN == 0 )
+        {
+            if( !tracyRoot.empty() ) chdir( tracyRoot.c_str() );
+            const char* av[] = { nativeBridge.c_str(), nullptr };
+            execv( nativeBridge.c_str(), (char* const*)av );
+            _exit( 127 );
+        }
+        m_integratorChildPid = pidN;
+        m_integratorMcpRunning = true;
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Native MCP — PID %d — http://127.0.0.1:%d/mcp", (int)pidN, s_config.llmIntegratorMcpPort );
+        return true;
+#endif
+    }
+
     std::string script;
     std::string repoResolved;
     char resolveErr[512];
     if( !ResolveIntegratorPaths( script, repoResolved, resolveErr, sizeof( resolveErr ) ) )
     {
-        snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "%s", resolveErr );
+        snprintf( m_integratorStatus, sizeof( m_integratorStatus ),
+            "%s\n\nWith an empty integrator script, Tracy starts native MCP in-process. If that fails, it looks for a separate tracy-mcp-bridge next to the executable or in a dev mcp/bridge build folder, then Node.",
+            resolveErr );
         m_integratorScriptUsed[0] = '\0';
         return false;
     }
@@ -1636,12 +1840,8 @@ bool TracyLlm::StartIntegratorMcpProcess()
         m_integratorScriptUsed[n] = '\0';
     }
 
-    std::string tracyRoot = s_config.llmIntegratorTracyRoot;
-    while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
     if( tracyRoot.empty() ) tracyRoot = repoResolved;
     while( !tracyRoot.empty() && ( tracyRoot.back() == '/' || tracyRoot.back() == '\\' ) ) tracyRoot.pop_back();
-
-    const std::string portStr = std::to_string( s_config.llmIntegratorMcpPort );
 
 #ifdef _WIN32
     char nodeExe[MAX_PATH];
@@ -1650,7 +1850,7 @@ bool TracyLlm::StartIntegratorMcpProcess()
     {
         if( !SearchPathA( NULL, "node.exe", NULL, (DWORD)sizeof( nodeExe ), nodeExe, NULL ) )
         {
-            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "node.exe not on PATH. Install Node.js or set \"Node executable\" in Advanced." );
+            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "node.exe not on PATH. Install Node.js, set \"Node executable\" in Advanced, or rely on in-process / external tracy-mcp-bridge (empty integrator script) for native MCP." );
             return false;
         }
     }
@@ -1665,25 +1865,25 @@ bool TracyLlm::StartIntegratorMcpProcess()
     if( !s_config.llmIntegratorBridge.empty() ) _putenv_s( "TRACY_MCP_BRIDGE", s_config.llmIntegratorBridge.c_str() );
 
     std::string cmdLine = std::string( "\"" ) + nodeExe + "\" \"" + script + "\"";
-    std::vector<char> cmdBuf( cmdLine.begin(), cmdLine.end() );
-    cmdBuf.push_back( '\0' );
+    std::vector<char> ncmd( cmdLine.begin(), cmdLine.end() );
+    ncmd.push_back( '\0' );
 
-    STARTUPINFOA si = {};
-    si.cb = sizeof( si );
-    PROCESS_INFORMATION pi = {};
+    STARTUPINFOA si2 = {};
+    si2.cb = sizeof( si2 );
+    PROCESS_INFORMATION pi2 = {};
 
-    const char* cwd = tracyRoot.empty() ? NULL : tracyRoot.c_str();
-    if( !CreateProcessA( nodeExe, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, cwd, &si, &pi ) )
+    const char* cwd2 = tracyRoot.empty() ? NULL : tracyRoot.c_str();
+    if( !CreateProcessA( nodeExe, ncmd.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, cwd2, &si2, &pi2 ) )
     {
         const DWORD err = GetLastError();
         snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "CreateProcess failed (error %lu). Check Node and script paths.", (unsigned long)err );
         return false;
     }
 
-    CloseHandle( pi.hThread );
-    m_integratorProcessHandle = (uint64_t)(uintptr_t)pi.hProcess;
+    CloseHandle( pi2.hThread );
+    m_integratorProcessHandle = (uint64_t)(uintptr_t)pi2.hProcess;
     m_integratorMcpRunning = true;
-    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "PID %lu — http://127.0.0.1:%d/mcp", (unsigned long)pi.dwProcessId, s_config.llmIntegratorMcpPort );
+    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Node MCP — PID %lu — http://127.0.0.1:%d/mcp", (unsigned long)pi2.dwProcessId, s_config.llmIntegratorMcpPort );
     return true;
 #else
     if( setenv( "TRACY_MCP_HTTP_PORT", portStr.c_str(), 1 ) != 0 )
@@ -1724,7 +1924,7 @@ bool TracyLlm::StartIntegratorMcpProcess()
 
     m_integratorChildPid = pid;
     m_integratorMcpRunning = true;
-    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "PID %d — http://127.0.0.1:%d/mcp", (int)pid, s_config.llmIntegratorMcpPort );
+    snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Node MCP — PID %d — http://127.0.0.1:%d/mcp", (int)pid, s_config.llmIntegratorMcpPort );
     return true;
 #endif
 }
@@ -1737,40 +1937,45 @@ void TracyLlm::UpdateIntegratorMcpProcess()
         if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
     }
 
-#ifdef _WIN32
-    if( m_integratorProcessHandle )
-    {
-        HANDLE h = (HANDLE)(uintptr_t)m_integratorProcessHandle;
-        if( WaitForSingleObject( h, 0 ) == WAIT_OBJECT_0 )
-        {
-            DWORD code = 1;
-            GetExitCodeProcess( h, &code );
-            CloseHandle( h );
-            m_integratorProcessHandle = 0;
-            m_integratorMcpRunning = false;
-            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (code %lu).", (unsigned long)code );
-            if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
-        }
-    }
-#else
-    if( m_integratorChildPid > 0 )
-    {
-        int st = 0;
-        const pid_t r = waitpid( m_integratorChildPid, &st, WNOHANG );
-        if( r == m_integratorChildPid )
-        {
-            m_integratorChildPid = -1;
-            m_integratorMcpRunning = false;
-            snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (status %d).", st );
-            if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
-        }
-        else if( r < 0 )
-        {
-            m_integratorChildPid = -1;
-            m_integratorMcpRunning = false;
-        }
-    }
+#if defined( TRACY_MCP_EMBEDDED )
+    if( !m_integratorMcpEmbedded )
 #endif
+    {
+#ifdef _WIN32
+        if( m_integratorProcessHandle )
+        {
+            HANDLE h = (HANDLE)(uintptr_t)m_integratorProcessHandle;
+            if( WaitForSingleObject( h, 0 ) == WAIT_OBJECT_0 )
+            {
+                DWORD code = 1;
+                GetExitCodeProcess( h, &code );
+                CloseHandle( h );
+                m_integratorProcessHandle = 0;
+                m_integratorMcpRunning = false;
+                snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (code %lu).", (unsigned long)code );
+                if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+            }
+        }
+#else
+        if( m_integratorChildPid > 0 )
+        {
+            int st = 0;
+            const pid_t r = waitpid( m_integratorChildPid, &st, WNOHANG );
+            if( r == m_integratorChildPid )
+            {
+                m_integratorChildPid = -1;
+                m_integratorMcpRunning = false;
+                snprintf( m_integratorStatus, sizeof( m_integratorStatus ), "Integrator exited (status %d).", st );
+                if( s_config.llmIntegratorMcpEnabled ) m_integratorNeedStart = true;
+            }
+            else if( r < 0 )
+            {
+                m_integratorChildPid = -1;
+                m_integratorMcpRunning = false;
+            }
+        }
+#endif
+    }
 
     const bool want = s_config.llmIntegratorMcpEnabled;
     if( !want && m_integratorMcpRunning ) StopIntegratorMcpProcess();

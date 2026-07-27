@@ -8,7 +8,7 @@ import { TracyBridgeClient } from "./bridge-client.js";
 import { registerTraceTools, resolveBridgeExecutable } from "./trace-tools.js";
 
 export const SERVER_NAME = "tracy-integrator-mcp";
-export const SERVER_VERSION = "0.3.4";
+export const SERVER_VERSION = "0.3.5";
 
 export type TracyMcpContext = {
   mcp: McpServer;
@@ -59,9 +59,9 @@ export function createTracyMcpContext(): TracyMcpContext {
 
 **Open capture (avoid redundant work):** The Cursor chat often already knows the user’s **focused editor file**. If it is a \`.tracy\` path, use that as the path for \`open_tracy_capture\`—do not ask the user to paste a path. Opening a file in the Tracy *GUI* does **not** load the MCP bridge; only \`open_tracy_capture\` does. **Before** opening, call \`tracy_mcp_status\`: if \`captureOpen\` is true and \`openPath\` matches the file you need (same file), **skip** \`open_tracy_capture\` and go straight to analysis tools.
 
-**GUI frame numbers vs capture index:** \`frame_index\` is 0-based in **capture order** (same as \`list_frames\` → \`index\`). The Tracy **title bar** often shows a different number (on-demand, \`frameOffset\`, main vs named frame set). **Do not** put the title bar number in \`frame_index\`—use \`gui_frame_number\` on tools like \`summarize_frame\`, \`compare_frames\`, and \`get_frame_screenshot\`, or call \`resolve_tracy_frame\` / read \`list_frames\` → \`guiFrameNumber\` + \`index\`. (If you pass both, they must match.) get_capture_metadata has \`frameNumbering\`, \`frameOffset\`, and \`onDemand\`.
+**Frames: index vs label vs \`pid\`:** In \`get_capture_metadata\`, \`pid\` is the **profiled app’s OS process id** (one constant for the file). It does **not** change every frame, is **not** a “frame 60 Hz” counter, and is **not** a substitute for a frame id. For tools, the **default** is \`frame_index\` = \`list_frames\` → \`index\` (0,1,2,… — stable in the open file). The Tracy **GUI label** for a frame is \`guiFrameNumber\`; use \`gui_frame_number\` in tool args only when that label is **not** the same as the capture index (e.g. on-demand + \`frameOffset\`, named frame sets) or when the user **quotes the bar** and you are not using \`index\` from \`list_frames\`. **Do not** put a GUI label into \`frame_index\` by mistake. If you pass \`frame_index\` and \`gui_frame_number\` together, they must match. A **live** Tracy window can show a **running** frame count while the game runs; MCP analyzes the **loaded** \`.tracy\` — pause in the GUI or work from the file’s \`list_frames\` to align (see get_tracy_view_context, \`frameNumbering\`, \`onDemand\`).
 
-**GUI vs MCP (live window):** The Tracy app and this MCP use the same trace file, but the MCP does not drive zoom, view span, ruler, or next/prev. Use get_tracy_view_context for that. Responses from summarize_frame / compare_frames echo \`guiFrameNumber\` when applicable.
+**GUI vs MCP (live window):** The app and this MCP share the file format, but the MCP does not control zoom, span, ruler, or next/prev. Responses from summarize_frame / compare_frames echo \`guiFrameNumber\` when applicable.
 
 **Function coverage across frames:** use list_frame_functions to enumerate all zone source locations in a frame (call counts and overlap), and compare_frame_functions to see functions only in one of two frames or call-count deltas—useful when comparing states across a transition.
 
