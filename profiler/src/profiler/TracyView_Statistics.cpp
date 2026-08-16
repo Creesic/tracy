@@ -245,6 +245,7 @@ void View::DrawStatistics()
                         total = it->second.nonReentrantTotal;
                         break;
                     }
+                    if( count == 0 ) continue;
                     if( !filterActive )
                     {
                         srcloc.push_back_no_space_check( SrcLocZonesSlim { it->first, (uint16_t)it->second.threadCnt.size(), count, total } );
@@ -744,7 +745,7 @@ void View::DrawStatistics()
                     TextDisabledUnformatted( LocationToString( file, srcloc.line ) );
                     if( ImGui::IsItemHovered() )
                     {
-                        DrawSourceTooltip( file, srcloc.line );
+                        DrawSourceTooltip( file, srcloc.line, srcloc.line );
                         if( ImGui::IsItemClicked( 1 ) )
                         {
                             if( SourceFileValid( file, m_worker.GetCaptureTime(), *this, m_worker ) )

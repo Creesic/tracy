@@ -206,7 +206,7 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, uint
                             assert( false );
                             break;
                         }
-                        if( m_statHideUnknown && file[0] == '[' ) continue;
+                        if( m_statHideUnknown && strcmp( name, "[unknown]" ) == 0 ) continue;
                         symlen = sit->second.size.Val();
                     }
                     else if( m_statHideUnknown )
@@ -510,14 +510,14 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, uint
                         if( frame && frame->size > 1 )
                         {
                             ImGui::BeginTooltip();
-                            if( DrawSourceTooltip( file, line, 3, 3, false ) ) ImGui::Separator();
+                            if( DrawSourceTooltip( file, line, line, 3, 3, false ) ) ImGui::Separator();
                             TextDisabledUnformatted( "Local call stack:" );
                             PrintLocalStack( frame, m_worker, *this );
                             ImGui::EndTooltip();
                         }
                         else
                         {
-                            DrawSourceTooltip( file, line );
+                            DrawSourceTooltip( file, line, line );
                         }
                         if( ImGui::IsItemClicked( 1 ) )
                         {
@@ -550,25 +550,11 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, uint
                         ImGui::Unindent( indentVal );
                     }
                     ImGui::TableNextColumn();
-                    if( m_shortImageNames )
-                    {
-                        const char* end = imageName + strlen( imageName );
-                        const char* ptr = end - 1;
-                        while( ptr > imageName && *ptr != '/' && *ptr != '\\' ) ptr--;
-                        if( *ptr == '/' || *ptr == '\\' ) ptr++;
-                        const auto cw = ImGui::GetContentRegionAvail().x;
-                        const auto tw = ImGui::CalcTextSize( imageName, end ).x;
-                        TextDisabledUnformatted( ptr );
-                        if( ptr != imageName || tw > cw ) TooltipIfHovered( imageName );
-                    }
-                    else
-                    {
-                        const char* end = imageName + strlen( imageName );
-                        const auto cw = ImGui::GetContentRegionAvail().x;
-                        const auto tw = ImGui::CalcTextSize( imageName, end ).x;
-                        TextDisabledUnformatted( imageName );
-                        if( tw > cw ) TooltipIfHovered( imageName );
-                    }
+                    const char* ptr = m_shortImageNames ? ShortenImageName( imageName ) : imageName;
+                    const auto cw = ImGui::GetContentRegionAvail().x;
+                    const auto tw = ImGui::CalcTextSize( imageName ).x;
+                    TextDisabledUnformatted( ptr );
+                    if( ptr != imageName || tw > cw ) TooltipIfHovered( imageName );
                     ImGui::TableNextColumn();
                     const auto baseCnt = cnt;
                     if( cnt > 0 )
@@ -758,14 +744,14 @@ void View::DrawSamplesStatistics( Vector<SymList>& data, int64_t timeRange, uint
                                         if( frame && frame->size > 1 )
                                         {
                                             ImGui::BeginTooltip();
-                                            if( DrawSourceTooltip( file, line, 3, 3, false ) ) ImGui::Separator();
+                                            if( DrawSourceTooltip( file, line, line, 3, 3, false ) ) ImGui::Separator();
                                             TextDisabledUnformatted( "Local call stack:" );
                                             PrintLocalStack( frame, m_worker, *this );
                                             ImGui::EndTooltip();
                                             passed = true;
                                         }
                                     }
-                                    if( !passed ) DrawSourceTooltip( file, line );
+                                    if( !passed ) DrawSourceTooltip( file, line, line );
                                     if( ImGui::IsItemClicked( 1 ) )
                                     {
                                         if( SourceFileValid( file, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -1243,12 +1229,12 @@ void View::DrawSampleParents()
                                 if( sym )
                                 {
                                     const auto symtxt = m_worker.GetString( sym->file );
-                                    DrawSourceTooltip( symtxt, sym->line );
+                                    DrawSourceTooltip( symtxt, sym->line, sym->line );
                                 }
                             }
                             else
                             {
-                                DrawSourceTooltip( txt, frame.line );
+                                DrawSourceTooltip( txt, frame.line, frame.line );
                             }
                             if( ImGui::IsItemClicked( 1 ) )
                             {
@@ -1286,25 +1272,11 @@ void View::DrawSampleParents()
                         if( frameData->imageName.Active() )
                         {
                             const char* imageName = m_worker.GetString( frameData->imageName );
-                            const char* end = imageName + strlen( imageName );
-
-                            if( m_shortImageNames )
-                            {
-                                const char* ptr = end - 1;
-                                while( ptr > imageName && *ptr != '/' && *ptr != '\\' ) ptr--;
-                                if( *ptr == '/' || *ptr == '\\' ) ptr++;
-                                const auto cw = ImGui::GetContentRegionAvail().x;
-                                const auto tw = ImGui::CalcTextSize( imageName, end ).x;
-                                TextDisabledUnformatted( ptr );
-                                if( ptr != imageName || tw > cw ) TooltipIfHovered( imageName );
-                            }
-                            else
-                            {
-                                const auto cw = ImGui::GetContentRegionAvail().x;
-                                const auto tw = ImGui::CalcTextSize( imageName, end ).x;
-                                TextDisabledUnformatted( imageName );
-                                if( tw > cw ) TooltipIfHovered( imageName );
-                            }
+                            const char* ptr = m_shortImageNames ? ShortenImageName( imageName ) : imageName;
+                            const auto cw = ImGui::GetContentRegionAvail().x;
+                            const auto tw = ImGui::CalcTextSize( imageName ).x;
+                            TextDisabledUnformatted( ptr );
+                            if( ptr != imageName || tw > cw ) TooltipIfHovered( imageName );
                         }
                     }
                 }

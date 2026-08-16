@@ -215,13 +215,16 @@ set(common_includes
     ${TRACY_PUBLIC_DIR}/common/TracyApi.h
     ${TRACY_PUBLIC_DIR}/common/TracyColor.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyForceInline.hpp
+    ${TRACY_PUBLIC_DIR}/common/TracyFormat.h
     ${TRACY_PUBLIC_DIR}/common/TracyMutex.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyProtocol.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyQueue.hpp
     ${TRACY_PUBLIC_DIR}/common/TracySocket.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyStackFrames.hpp
+    ${TRACY_PUBLIC_DIR}/common/TracyString.hpp
     ${TRACY_PUBLIC_DIR}/common/TracySystem.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyTaggedUserlandAddress.hpp
+    ${TRACY_PUBLIC_DIR}/common/TracyVersion.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyWinFamily.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyYield.hpp)
 

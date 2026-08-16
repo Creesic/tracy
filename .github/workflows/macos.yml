@@ -8,6 +8,13 @@ on:
   workflow_dispatch:
   workflow_call:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/cpm-cache
 
@@ -60,10 +67,13 @@ jobs:
         cp -r profiler/build/tracy-profiler.app bin
         cp update/build/tracy-update bin
         cp capture/build/tracy-capture bin
+        cp capture/build/tracy-capture-daemon bin
         cp csvexport/build/tracy-csvexport bin
         cp import/build/tracy-import-chrome bin
         cp import/build/tracy-import-fuchsia bin
         cp merge/build/tracy-merge bin
+        strip bin/tracy-profiler.app/Contents/MacOS/tracy-profiler
+        strip bin/tracy-update bin/tracy-capture bin/tracy-capture-daemon bin/tracy-csvexport bin/tracy-import-chrome bin/tracy-import-fuchsia bin/tracy-merge
     - uses: actions/upload-artifact@v4
       with:
         name: macos

@@ -1,4 +1,4 @@
-project('tracy', ['cpp'], version: '0.13.1', meson_version: '>=1.3.0', default_options : ['cpp_std=c++11'])
+project('tracy', ['cpp'], version: '0', meson_version: '>=1.3.0', default_options : ['cpp_std=c++11'])
 
 # internal compiler flags
 tracy_compile_args = []
@@ -192,13 +192,16 @@ common_includes = [
     'public/common/TracyApi.h',
     'public/common/TracyColor.hpp',
     'public/common/TracyForceInline.hpp',
+    'public/common/TracyFormat.h',
     'public/common/TracyMutex.hpp',
     'public/common/TracyProtocol.hpp',
     'public/common/TracyQueue.hpp',
     'public/common/TracySocket.hpp',
     'public/common/TracyStackFrames.hpp',
+    'public/common/TracyString.hpp',
     'public/common/TracySystem.hpp',
     'public/common/TracyTaggedUserlandAddress.hpp',
+    'public/common/TracyVersion.hpp',
     'public/common/TracyWinFamily.hpp',
     'public/common/TracyYield.hpp'
 ]

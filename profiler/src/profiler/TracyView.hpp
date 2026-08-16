@@ -26,6 +26,7 @@
 #include "TracyUtility.hpp"
 #include "TracyViewData.hpp"
 #include "TracyWindowConstraints.hpp"
+#include "../common/TracyString.hpp"
 #include "../server/TracyFileWrite.hpp"
 #include "../server/TracyTaskDispatch.hpp"
 #include "../server/TracyShortPtr.hpp"
@@ -212,7 +213,7 @@ public:
     bool DrawGpu( const TimelineContext& ctx, const GpuCtxData& gpu, int& offset );
     bool DrawCpuData( const TimelineContext& ctx, const std::vector<CpuUsageDraw>& cpuDraw, const std::vector<std::vector<CpuCtxDraw>>& ctxDraw, int& offset, bool hasCpuData );
     void DrawThreadMigrations( const TimelineContext& ctx, const int origOffset, uint64_t thread );
-    bool DrawSourceTooltip( const char* filename, uint32_t line, int before = 3, int after = 3, bool separateTooltip = true );
+    bool DrawSourceTooltip( const char* filename, uint32_t lineStart, uint32_t lineEnd, int before = 3, int after = 3, bool separateTooltip = true );
 
     bool IsBackgroundDone() const { return m_worker.IsBackgroundDone(); }
 
@@ -273,7 +274,7 @@ private:
         constexpr static auto StartRangeMod = std::array<int, 4> { -1, 1, 1, -1 };
         constexpr static auto EndRangeMod = std::array<int, 4> { -1, 1, -1, 1 };
 
-        std::array<float, 4> m_scrollInertia;
+        std::array<float, 4> m_scrollInertia {};
     };
 
     struct ZoneColorData
@@ -558,7 +559,7 @@ private:
     KeyboardNavigation m_kbNavCtrl;
 
     const ZoneEvent* m_zoneInfoWindow = nullptr;
-    const ZoneEvent* m_zoneHighlight;
+    const ZoneEvent* m_zoneHighlight = nullptr;
     DecayValue<int16_t> m_zoneSrcLocHighlight = 0;
     LockHighlight m_lockHighlight { -1 };
     LockHighlight m_nextLockHighlight;
@@ -566,7 +567,7 @@ private:
     DecayValue<uint32_t> m_lockHoverHighlight = InvalidId;
     DecayValue<const MessageData*> m_msgToFocus = nullptr;
     const GpuEvent* m_gpuInfoWindow = nullptr;
-    const GpuEvent* m_gpuHighlight;
+    const GpuEvent* m_gpuHighlight = nullptr;
     uint64_t m_gpuInfoWindowThread;
     CallstackView m_callstackView = {};
     int64_t m_memoryAllocInfoWindow = -1;
@@ -698,7 +699,7 @@ private:
     const char* m_sourceViewFile;
     bool m_uarchSet = false;
 
-    float m_rootWidth, m_rootHeight;
+    float m_rootWidth = 0, m_rootHeight = 0;
     SetTitleCallback m_stcb;
     bool m_titleSet = false;
     SetScaleCallback m_sscb;
@@ -742,7 +743,7 @@ private:
     bool m_reconnectRequested = false;
     bool m_firstFrame = true;
     std::chrono::time_point<std::chrono::high_resolution_clock> m_firstFrameTime;
-    float m_yDelta;
+    float m_yDelta = 0;
 
     std::vector<SourceRegex> m_sourceSubstitutions;
     bool m_sourceRegexValid = true;
@@ -881,7 +882,7 @@ private:
             range.active = false;
             Reset();
             match.emplace_back( srcloc );
-            strcpy( pattern, name );
+            strzcpy( pattern, name, sizeof( pattern ) );
         }
 
         void ShowZone( int16_t srcloc, const char* name, int64_t limitMin, int64_t limitMax )
@@ -893,7 +894,7 @@ private:
             range.max = limitMax;
             Reset();
             match.emplace_back( srcloc );
-            strcpy( pattern, name );
+            strzcpy( pattern, name, sizeof( pattern ) );
         }
     } m_findZone;
 
