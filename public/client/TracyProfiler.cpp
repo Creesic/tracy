@@ -2206,7 +2206,7 @@ void Profiler::Worker()
     // takes care of calling StopSystemTracing(). However, a client may decide to
     // manually RequestShutdown(), in which case ~Profile() may not execute before
     // this Worker() thread goes through its teardown stages and reaches this point.
-    // To ensure that system tracing does not keep pushing data to the worker queue 
+    // To ensure that system tracing does not keep pushing data to the worker queue
     // indefinitely (thus preventing this worker from terminating), we have to call
     // StopSystemTracing() here as well to be safe:
     StopSystemTracing();
@@ -4444,6 +4444,7 @@ void Profiler::HandleSymbolCodeQuery( uint64_t symbol, uint32_t size )
 void Profiler::HandleSourceCodeQuery( char* data, char* image, uint32_t id )
 {
     bool ok = false;
+#ifndef TRACY_NO_CODE_TRANSFER
     FILE* f = fopen( data, "rb" );
     if( f )
     {
@@ -4469,7 +4470,7 @@ void Profiler::HandleSourceCodeQuery( char* data, char* image, uint32_t id )
         fclose( f );
     }
 
-#ifdef TRACY_DEBUGINFOD
+#  ifdef TRACY_DEBUGINFOD
     else if( image && data[0] == '/' )
     {
         size_t size;
@@ -4509,7 +4510,7 @@ void Profiler::HandleSourceCodeQuery( char* data, char* image, uint32_t id )
     {
         TracyDebug( "DebugInfo invalid query fn: %s, image: %s", data, image );
     }
-#endif
+#  endif
 
     if( !ok && m_sourceCallback )
     {
@@ -4532,6 +4533,7 @@ void Profiler::HandleSourceCodeQuery( char* data, char* image, uint32_t id )
             }
         }
     }
+#endif
 
     if( !ok )
     {
@@ -4568,6 +4570,9 @@ TRACY_API TracyCZoneCtx ___tracy_emit_zone_begin( const struct ___tracy_source_l
     ctx.active = active;
 #endif
     if( !ctx.active ) return ctx;
+#ifdef TRACY_ON_DEMAND
+    ctx.connectionId = tracy::GetProfiler().ConnectionId();
+#endif
     const auto id = tracy::GetProfiler().GetNextZoneId();
     ctx.id = id;
 
@@ -4596,6 +4601,9 @@ TRACY_API TracyCZoneCtx ___tracy_emit_zone_begin_callstack( const struct ___trac
     ctx.active = active;
 #endif
     if( !ctx.active ) return ctx;
+#ifdef TRACY_ON_DEMAND
+    ctx.connectionId = tracy::GetProfiler().ConnectionId();
+#endif
     const auto id = tracy::GetProfiler().GetNextZoneId();
     ctx.id = id;
 
@@ -4633,6 +4641,9 @@ TRACY_API TracyCZoneCtx ___tracy_emit_zone_begin_alloc( uint64_t srcloc, int32_t
         tracy::tracy_free( (void*)srcloc );
         return ctx;
     }
+#ifdef TRACY_ON_DEMAND
+    ctx.connectionId = tracy::GetProfiler().ConnectionId();
+#endif
     const auto id = tracy::GetProfiler().GetNextZoneId();
     ctx.id = id;
 
@@ -4665,6 +4676,9 @@ TRACY_API TracyCZoneCtx ___tracy_emit_zone_begin_alloc_callstack( uint64_t srclo
         tracy::tracy_free( (void*)srcloc );
         return ctx;
     }
+#ifdef TRACY_ON_DEMAND
+    ctx.connectionId = tracy::GetProfiler().ConnectionId();
+#endif
     const auto id = tracy::GetProfiler().GetNextZoneId();
     ctx.id = id;
 
@@ -4692,6 +4706,9 @@ TRACY_API TracyCZoneCtx ___tracy_emit_zone_begin_alloc_callstack( uint64_t srclo
 TRACY_API void ___tracy_emit_zone_end( TracyCZoneCtx ctx )
 {
     if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
 #ifndef TRACY_NO_VERIFY
     {
         TracyQueuePrepareC( tracy::QueueType::ZoneValidation );
@@ -4710,6 +4727,9 @@ TRACY_API void ___tracy_emit_zone_text( TracyCZoneCtx ctx, const char* txt, size
 {
     assert( size < std::numeric_limits<uint16_t>::max() );
     if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
     auto ptr = (char*)tracy::tracy_malloc( size );
     memcpy( ptr, txt, size );
 #ifndef TRACY_NO_VERIFY
@@ -4727,10 +4747,44 @@ TRACY_API void ___tracy_emit_zone_text( TracyCZoneCtx ctx, const char* txt, size
     }
 }
 
+TRACY_API void ___tracy_emit_zone_text_fmt( TracyCZoneCtx ctx, const char* fmt, ... )
+{
+    if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
+    va_list args;
+    va_start( args, fmt );
+    auto size = vsnprintf( nullptr, 0, fmt, args );
+    va_end( args );
+    if( size < 0 ) return;
+    assert( size < (std::numeric_limits<uint16_t>::max)() );
+
+    char* ptr = (char*)tracy::tracy_malloc( size_t( size ) + 1 );
+    va_start( args, fmt );
+    vsnprintf( ptr, size_t( size ) + 1, fmt, args );
+    va_end( args );
+
+#ifndef TRACY_NO_VERIFY
+    {
+        TracyQueuePrepareC( tracy::QueueType::ZoneValidation );
+        tracy::MemWrite( &item->zoneValidation.id, ctx.id );
+        TracyQueueCommitC( zoneValidationThread );
+    }
+#endif
+    TracyQueuePrepareC( tracy::QueueType::ZoneText );
+    tracy::MemWrite( &item->zoneTextFat.text, (uint64_t)ptr );
+    tracy::MemWrite( &item->zoneTextFat.size, (uint16_t)size );
+    TracyQueueCommitC( zoneTextFatThread );
+}
+
 TRACY_API void ___tracy_emit_zone_name( TracyCZoneCtx ctx, const char* txt, size_t size )
 {
     assert( size < std::numeric_limits<uint16_t>::max() );
     if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
     auto ptr = (char*)tracy::tracy_malloc( size );
     memcpy( ptr, txt, size );
 #ifndef TRACY_NO_VERIFY
@@ -4748,8 +4802,42 @@ TRACY_API void ___tracy_emit_zone_name( TracyCZoneCtx ctx, const char* txt, size
     }
 }
 
+TRACY_API void ___tracy_emit_zone_name_fmt( TracyCZoneCtx ctx, const char* fmt, ... )
+{
+    if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
+    va_list args;
+    va_start( args, fmt );
+    auto size = vsnprintf( nullptr, 0, fmt, args );
+    va_end( args );
+    if( size < 0 ) return;
+    assert( size < (std::numeric_limits<uint16_t>::max)() );
+
+    char* ptr = (char*)tracy::tracy_malloc( size_t( size ) + 1 );
+    va_start( args, fmt );
+    vsnprintf( ptr, size_t( size ) + 1, fmt, args );
+    va_end( args );
+
+#ifndef TRACY_NO_VERIFY
+    {
+        TracyQueuePrepareC( tracy::QueueType::ZoneValidation );
+        tracy::MemWrite( &item->zoneValidation.id, ctx.id );
+        TracyQueueCommitC( zoneValidationThread );
+    }
+#endif
+    TracyQueuePrepareC( tracy::QueueType::ZoneName );
+    tracy::MemWrite( &item->zoneTextFat.text, (uint64_t)ptr );
+    tracy::MemWrite( &item->zoneTextFat.size, (uint16_t)size );
+    TracyQueueCommitC( zoneTextFatThread );
+}
+
 TRACY_API void ___tracy_emit_zone_color( TracyCZoneCtx ctx, uint32_t color ) {
     if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
 #ifndef TRACY_NO_VERIFY
     {
         TracyQueuePrepareC( tracy::QueueType::ZoneValidation );
@@ -4769,6 +4857,9 @@ TRACY_API void ___tracy_emit_zone_color( TracyCZoneCtx ctx, uint32_t color ) {
 TRACY_API void ___tracy_emit_zone_value( TracyCZoneCtx ctx, uint64_t value )
 {
     if( !ctx.active ) return;
+#ifdef TRACY_ON_DEMAND
+    if( tracy::GetProfiler().ConnectionId() != ctx.connectionId ) return;
+#endif
 #ifndef TRACY_NO_VERIFY
     {
         TracyQueuePrepareC( tracy::QueueType::ZoneValidation );
@@ -4873,6 +4964,9 @@ TRACY_API uint64_t ___tracy_alloc_srcloc_name( uint32_t line, const char* source
 
 TRACY_API void ___tracy_emit_gpu_zone_begin( const struct ___tracy_gpu_zone_begin_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuZoneBegin );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
     tracy::MemWrite( &item->gpuZoneBegin.thread, tracy::GetThreadHandle() );
@@ -4884,6 +4978,9 @@ TRACY_API void ___tracy_emit_gpu_zone_begin( const struct ___tracy_gpu_zone_begi
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_callstack( const struct ___tracy_gpu_zone_begin_callstack_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     tracy::GetProfiler().SendCallstack( data.depth );
     TracyLfqPrepareC( tracy::QueueType::GpuZoneBeginCallstack );
     tracy::MemWrite( &item->gpuZoneBegin.thread, tracy::GetThreadHandle() );
@@ -4896,6 +4993,13 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_callstack( const struct ___tracy_gpu
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_alloc( const struct ___tracy_gpu_zone_begin_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() )
+    {
+        tracy::tracy_free( (void*)data.srcloc );
+        return;
+    }
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuZoneBeginAllocSrcLoc  );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
     tracy::MemWrite( &item->gpuZoneBegin.thread, tracy::GetThreadHandle() );
@@ -4907,6 +5011,13 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_alloc( const struct ___tracy_gpu_zon
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_callstack( const struct ___tracy_gpu_zone_begin_callstack_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() )
+    {
+        tracy::tracy_free( (void*)data.srcloc );
+        return;
+    }
+#endif
     tracy::GetProfiler().SendCallstack( data.depth );
     TracyLfqPrepareC( tracy::QueueType::GpuZoneBeginAllocSrcLocCallstack  );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
@@ -4919,6 +5030,9 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_callstack( const struct ___tra
 
 TRACY_API void ___tracy_emit_gpu_time( const struct ___tracy_gpu_time_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuTime );
     tracy::MemWrite( &item->gpuTime.gpuTime, data.gpuTime );
     tracy::MemWrite( &item->gpuTime.queryId, data.queryId );
@@ -4928,6 +5042,9 @@ TRACY_API void ___tracy_emit_gpu_time( const struct ___tracy_gpu_time_data data 
 
 TRACY_API void ___tracy_emit_gpu_zone_end( const struct ___tracy_gpu_zone_end_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuZoneEnd );
     tracy::MemWrite( &item->gpuZoneEnd.cpuTime, tracy::Profiler::GetTime() );
     memset( &item->gpuZoneEnd.thread, 0, sizeof( item->gpuZoneEnd.thread ) );
@@ -4973,6 +5090,9 @@ TRACY_API void ___tracy_emit_gpu_context_name( const struct ___tracy_gpu_context
 
 TRACY_API void ___tracy_emit_gpu_calibration( const struct ___tracy_gpu_calibration_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuCalibration );
     tracy::MemWrite( &item->gpuCalibration.cpuTime, tracy::Profiler::GetTime() );
     tracy::MemWrite( &item->gpuCalibration.gpuTime, data.gpuTime );
@@ -4983,6 +5103,9 @@ TRACY_API void ___tracy_emit_gpu_calibration( const struct ___tracy_gpu_calibrat
 
 TRACY_API void ___tracy_emit_gpu_time_sync( const struct ___tracy_gpu_time_sync_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     TracyLfqPrepareC( tracy::QueueType::GpuTimeSync );
     tracy::MemWrite( &item->gpuTimeSync.cpuTime, tracy::Profiler::GetTime() );
     tracy::MemWrite( &item->gpuTimeSync.gpuTime, data.gpuTime );
@@ -4992,6 +5115,9 @@ TRACY_API void ___tracy_emit_gpu_time_sync( const struct ___tracy_gpu_time_sync_
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_serial( const struct ___tracy_gpu_zone_begin_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuZoneBeginSerial );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
@@ -5004,6 +5130,9 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_serial( const struct ___tracy_gpu_zo
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_callstack_serial( const struct ___tracy_gpu_zone_begin_callstack_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerialCallstack( tracy::Callstack( data.depth ) );
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuZoneBeginCallstackSerial );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
@@ -5016,6 +5145,13 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_callstack_serial( const struct ___tr
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_serial( const struct ___tracy_gpu_zone_begin_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() )
+    {
+        tracy::tracy_free( (void*)data.srcloc );
+        return;
+    }
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuZoneBeginAllocSrcLocSerial );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
@@ -5028,6 +5164,13 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_serial( const struct ___tracy_
 
 TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_callstack_serial( const struct ___tracy_gpu_zone_begin_callstack_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() )
+    {
+        tracy::tracy_free( (void*)data.srcloc );
+        return;
+    }
+#endif
     auto item = tracy::Profiler::QueueSerialCallstack( tracy::Callstack( data.depth ) );
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuZoneBeginAllocSrcLocCallstackSerial );
     tracy::MemWrite( &item->gpuZoneBegin.cpuTime, tracy::Profiler::GetTime() );
@@ -5040,6 +5183,9 @@ TRACY_API void ___tracy_emit_gpu_zone_begin_alloc_callstack_serial( const struct
 
 TRACY_API void ___tracy_emit_gpu_time_serial( const struct ___tracy_gpu_time_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuTime );
     tracy::MemWrite( &item->gpuTime.gpuTime, data.gpuTime );
@@ -5050,6 +5196,9 @@ TRACY_API void ___tracy_emit_gpu_time_serial( const struct ___tracy_gpu_time_dat
 
 TRACY_API void ___tracy_emit_gpu_zone_end_serial( const struct ___tracy_gpu_zone_end_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuZoneEndSerial );
     tracy::MemWrite( &item->gpuZoneEnd.cpuTime, tracy::Profiler::GetTime() );
@@ -5098,6 +5247,9 @@ TRACY_API void ___tracy_emit_gpu_context_name_serial( const struct ___tracy_gpu_
 
 TRACY_API void ___tracy_emit_gpu_calibration_serial( const struct ___tracy_gpu_calibration_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuCalibration );
     tracy::MemWrite( &item->gpuCalibration.cpuTime, tracy::Profiler::GetTime() );
@@ -5109,6 +5261,9 @@ TRACY_API void ___tracy_emit_gpu_calibration_serial( const struct ___tracy_gpu_c
 
 TRACY_API void ___tracy_emit_gpu_time_sync_serial( const struct ___tracy_gpu_time_sync_data data )
 {
+#ifdef TRACY_ON_DEMAND
+    if( !tracy::GetProfiler().IsConnected() ) return;
+#endif
     auto item = tracy::Profiler::QueueSerial();
     tracy::MemWrite( &item->hdr.type, tracy::QueueType::GpuTimeSync );
     tracy::MemWrite( &item->gpuTimeSync.cpuTime, tracy::Profiler::GetTime() );

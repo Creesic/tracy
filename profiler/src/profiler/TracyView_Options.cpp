@@ -470,7 +470,7 @@ void View::DrawOptions()
                         ImGui::TextDisabled( "(%s) %s", RealToString( l.second->timeline.size() ), LocationToString( fileName, sl.line ) );
                         if( ImGui::IsItemHovered() )
                         {
-                            DrawSourceTooltip( fileName, sl.line, 1, 1 );
+                            DrawSourceTooltip( fileName, sl.line, sl.line, 1, 1 );
                             if( ImGui::IsItemClicked( 1 ) )
                             {
                                 if( SourceFileValid( fileName, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -557,7 +557,7 @@ void View::DrawOptions()
                         ImGui::TextDisabled( "(%s) %s", RealToString( l.second->timeline.size() ), LocationToString( fileName, sl.line ) );
                         if( ImGui::IsItemHovered() )
                         {
-                            DrawSourceTooltip( fileName, sl.line, 1, 1 );
+                            DrawSourceTooltip( fileName, sl.line, sl.line, 1, 1 );
                             if( ImGui::IsItemClicked( 1 ) )
                             {
                                 if( SourceFileValid( fileName, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -644,7 +644,7 @@ void View::DrawOptions()
                         ImGui::TextDisabled( "(%s) %s", RealToString( l.second->timeline.size() ), LocationToString( fileName, sl.line ) );
                         if( ImGui::IsItemHovered() )
                         {
-                            DrawSourceTooltip( fileName, sl.line, 1, 1 );
+                            DrawSourceTooltip( fileName, sl.line, sl.line, 1, 1 );
                             if( ImGui::IsItemClicked( 1 ) )
                             {
                                 if( SourceFileValid( fileName, m_worker.GetCaptureTime(), *this, m_worker ) )
@@ -827,7 +827,7 @@ void View::DrawOptions()
                 if( ImGui::BeginDragDropTargetCustom( ImRect( wposx, m_threadDnd[i] - half, wposx + w, m_threadDnd[i] + half ), i+1 ) )
                 {
                     auto draw = ImGui::GetWindowDrawList();
-                    draw->AddLine( ImVec2( wposx, m_threadDnd[i] ), ImVec2( wposx + w, m_threadDnd[i] ), ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.f );
+                    draw->AddLineH( wposx, wposx + w, m_threadDnd[i], ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.f );
                     if( auto payload = ImGui::AcceptDragDropPayload( "ThreadOrder", ImGuiDragDropFlags_AcceptNoDrawDefaultRect ) )
                     {
                         target = (int)i;
@@ -919,12 +919,14 @@ void View::DrawOptions()
     {
         // Keep in sync with TracyView.cpp View::SetupConfig()
         s_config.targetFps = m_vd.frameTarget;
+        s_config.drawFrameTargets = m_vd.drawFrameTargets;
         s_config.dynamicColors = m_vd.dynamicColors;
         s_config.forceColors = m_vd.forceColors;
         s_config.ghostZones = m_vd.ghostZones;
         s_config.shortenName = (int)m_vd.shortenName;
         s_config.drawSamples = m_vd.drawSamples;
         s_config.drawContextSwitches = m_vd.drawContextSwitches;
+        s_config.plotHeight = m_vd.plotHeight;
         SaveConfig();
     }
 

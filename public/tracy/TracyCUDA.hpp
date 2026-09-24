@@ -26,6 +26,7 @@ using CUDACtx = std::nullptr_t;
 #include <cassert>
 #include <cmath>
 #include <string>
+#include <string.h>
 #include <string_view>
 #include <atomic>
 #include <mutex>
@@ -405,7 +406,7 @@ struct StringTable {
         if (!table.fetch(str, memoized)) {
             ZoneNamedN(lookup, "StringTable::insert", instrument);
             char* copy = (char*)tracyMalloc(str.size() + 1);
-            strncpy(copy, str.data(), str.size());
+            memcpy(copy, str.data(), str.size());
             copy[str.size()] = '\0';
             std::string_view value (copy, str.size());
             auto [it, inserted] = table.emplace(value, value);
@@ -1438,6 +1439,9 @@ namespace tracy
             tracyMemWrite(item->gpuNewContext.flags, GpuContextCalibration);
             #else
             tracyMemWrite(item->gpuNewContext.flags, tracy::GpuContextFlags(0));
+            #endif
+            #ifdef TRACY_ON_DEMAND
+            GetProfiler().DeferItem(*item);
             #endif
             Profiler::QueueSerialFinish();
 

@@ -8,6 +8,7 @@
 #include "TracyFastVector.hpp"
 #include "TracyStringHelpers.hpp"
 #include "../common/TracyAlloc.hpp"
+#include "../common/TracyString.hpp"
 #include "../common/TracySystem.hpp"
 
 
@@ -1282,9 +1283,12 @@ char* NormalizePath( const char* path )
         case 2:
             if( memcmp( ptr, "..", 2 ) == 0 )
             {
-                const char* back = res + rsz - 1;
-                while( back > res && *back != '/' ) back--;
-                rsz = back - res;
+                if( rsz > 0 )
+                {
+                    const char* back = res + rsz - 1;
+                    while( back > res && *back != '/' ) back--;
+                    rsz = back - res;
+                }
                 ptr = next + 1;
                 continue;
             }
@@ -1461,8 +1465,7 @@ static const char* DecodeCallstackPtrFastExternal( uint64_t ptr )
     }
     if( symname )
     {
-        strncpy( ret, symname, sizeof( ret ) - 1 );
-        ret[sizeof( ret ) - 1] = '\0';
+        strzcpy( ret, symname, sizeof( ret ) );
     }
     else
     {
@@ -1490,7 +1493,7 @@ const char* DecodeCallstackPtrFast( uint64_t ptr )
     }
     if( symname )
     {
-        strcpy( ret, symname );
+        strzcpy( ret, symname, sizeof( ret ) );
     }
     else
     {
@@ -1883,7 +1886,7 @@ const char* DecodeCallstackPtrFast( uint64_t ptr )
     }
     if( symname )
     {
-        strcpy( ret, symname );
+        strzcpy( ret, symname, sizeof( ret ) );
     }
     else
     {

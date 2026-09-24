@@ -339,6 +339,7 @@ static_assert( sizeof( CompressionName ) == sizeof( CompressionDesc ), "Unmatche
 
 bool View::Draw()
 {
+    Worker::MainThreadDataLockGuard lock = m_worker.ObtainLockForMainThread();
     HandshakeStatus status = (HandshakeStatus)m_worker.GetHandshakeStatus();
     switch( status )
     {
@@ -774,24 +775,6 @@ bool View::DrawImpl()
         m_acb();
     }
 
-    auto& threadHints = m_worker.GetPendingThreadHints();
-    if( !threadHints.empty() )
-    {
-        m_threadReinsert.reserve( threadHints.size()  );
-        for( auto v : threadHints )
-        {
-            auto it = std::find_if( m_threadOrder.begin(), m_threadOrder.end(), [v]( const auto& t ) { return t->id == v; } );
-            if( it != m_threadOrder.end() )
-            {
-                // Will be reinserted in the correct place later.
-                // A separate list is kept of threads that were already known to avoid having to figure out which one is missing in m_threadOrder.
-                m_threadReinsert.push_back( *it );
-                m_threadOrder.erase( it );
-            }
-        }
-        m_worker.ClearPendingThreadHints();
-    }
-
     const auto& io = ImGui::GetIO();
     m_wasActive.store( false, std::memory_order_release );
 
@@ -881,7 +864,23 @@ bool View::DrawImpl()
             ImGui::EndPopup();
         }
     }
-    Worker::MainThreadDataLockGuard lock = m_worker.ObtainLockForMainThread();
+    auto& threadHints = m_worker.GetPendingThreadHints();
+    if( !threadHints.empty() )
+    {
+        m_threadReinsert.reserve( threadHints.size()  );
+        for( auto v : threadHints )
+        {
+            auto it = std::find_if( m_threadOrder.begin(), m_threadOrder.end(), [v]( const auto& t ) { return t->id == v; } );
+            if( it != m_threadOrder.end() )
+            {
+                // Will be reinserted in the correct place later.
+                // A separate list is kept of threads that were already known to avoid having to figure out which one is missing in m_threadOrder.
+                m_threadReinsert.push_back( *it );
+                m_threadOrder.erase( it );
+            }
+        }
+        m_worker.ClearPendingThreadHints();
+    }
     m_worker.DoPostponedWork();
     if( !m_worker.IsDataStatic() )
     {
@@ -1421,7 +1420,7 @@ void View::CrashTooltip()
     ImGui::EndTooltip();
 }
 
-bool View::DrawSourceTooltip( const char* filename, uint32_t srcline, int before, int after, bool separateTooltip )
+bool View::DrawSourceTooltip( const char* filename, uint32_t lineStart, uint32_t lineEnd, int before, int after, bool separateTooltip )
 {
     if( !filename ) return false;
     if( !SourceFileValid( filename, m_worker.GetCaptureTime(), *this, m_worker ) ) return false;
@@ -1431,13 +1430,17 @@ bool View::DrawSourceTooltip( const char* filename, uint32_t srcline, int before
     if( separateTooltip ) ImGui::BeginTooltip();
     ImGui::PushFont( g_fonts.mono, FontNormal );
     auto& lines = m_srcHintCache.get();
-    const int start = std::max( 0, (int)srcline - ( before+1 ) );
-    const int end = std::min<int>( m_srcHintCache.get().size(), srcline + after );
     bool first = true;
     int bottomEmpty = 0;
-    for( int i=start; i<end; i++ )
+    constexpr int MaxRenderedLines = 40;
+    const int start = std::max( 0, (int)lineStart - ( before+1 ) );
+    const int end = std::min<int>( m_srcHintCache.get().size(), (int)lineEnd + after );
+    const int endLoop = std::min( end, start + MaxRenderedLines );
+    for( int i=start; i<endLoop; i++ )
     {
         auto& line = lines[i];
+        const auto lineNum = uint32_t( i+1 );
+        const bool inRange = lineNum >= lineStart && lineNum <= lineEnd;
         if( line.begin == line.end )
         {
             if( !first ) bottomEmpty++;
@@ -1467,7 +1470,7 @@ bool View::DrawSourceTooltip( const char* filename, uint32_t srcline, int before
                     ImGui::SameLine( 0, 0 );
                 }
                 auto color = SyntaxColors[(int)it->color];
-                if( i != srcline-1 ) color = ( color & 0xFFFFFF ) | 0x99000000;
+                if( !inRange ) color = ( color & 0xFFFFFF ) | 0x99000000;
                 TextColoredUnformatted( color, it->begin, it->end );
                 ImGui::SameLine( 0, 0 );
                 ptr = it->end;
@@ -1476,6 +1479,7 @@ bool View::DrawSourceTooltip( const char* filename, uint32_t srcline, int before
             ImGui::ItemSize( ImVec2( 0, 0 ), 0 );
         }
     }
+    if( end != endLoop ) ImGui::TextDisabled( "… (+%i more lines)", end - endLoop );
     ImGui::PopFont();
     if( separateTooltip ) ImGui::EndTooltip();
     ImGui::PopStyleVar();

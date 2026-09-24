@@ -5,6 +5,7 @@ import asyncio
 import atexit
 import builtins
 import concurrent.futures
+import faulthandler
 import glob
 import io
 import os
@@ -14,6 +15,8 @@ import socket
 import struct
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager, redirect_stdout
 
@@ -29,6 +32,7 @@ logging.getLogger("starlette").setLevel(logging.CRITICAL)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PORT_FILE = os.path.join(_HERE, "tracy_mcp.port")
 _PID_FILE  = os.path.join(_HERE, "tracy_mcp.pid")
+_CRASH_LOG_FILE = os.path.join(_HERE, "tracy_mcp.crash.log")
 _PREFERRED_PORT = int(os.environ.get("TRACY_MCP_PORT", "47380"))
 _TRANSPORT = os.environ.get("TRACY_MCP_TRANSPORT", "streamable-http").strip().lower()
 
@@ -156,10 +160,26 @@ async def _listen_broadcasts(timeout_s: float = 1.5) -> list[dict]:
     return list(seen.values())
 
 
-def _is_our_server_running() -> tuple[bool, int]:
+def _http_ping(port: int, timeout_s: float = 2.0) -> bool:
+    """Confirms the server answers HTTP, not just that its PID exists — a
+    deadlocked process still passes os.kill(pid, 0). Any response, even an
+    error one, proves the transport is alive; only a timeout or refused
+    connection means it's not.
     """
-    Check the PID file to see if our server is already running.
-    Returns (running, port). Uses os.kill(pid, 0) to confirm the process is alive.
+    path = mcp_server.settings.sse_path if _TRANSPORT == "sse" else mcp_server.settings.streamable_http_path
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout_s)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def _is_our_server_running() -> tuple[bool, int]:
+    """Check whether our server is running: PID alive AND responding to
+    an HTTP self-ping (a hung process still passes os.kill(pid, 0)).
+    Returns (running, port).
     """
     try:
         with open(_PID_FILE) as f:
@@ -167,9 +187,19 @@ def _is_our_server_running() -> tuple[bool, int]:
         with open(_PORT_FILE) as f:
             port = int(f.read().strip())
         os.kill(pid, 0)   # raises OSError if process is gone
-        return True, port
     except Exception:
         return False, 0
+    if not _http_ping(port):
+        print(
+            f"Tracy MCP process {pid} is alive (PID check passed) but isn't "
+            f"responding on port {port} within {2.0:.0f}s -- likely hung/deadlocked, "
+            f"not just busy. Starting a fresh server on a new port; kill PID {pid} "
+            f"manually once you're able to (it's still holding the port and the "
+            f"TracyServerBindings.pyd file lock).",
+            file=sys.stderr,
+        )
+        return False, 0
+    return True, port
 
 
 def _find_free_port() -> int:
@@ -221,7 +251,9 @@ except ImportError:
 
 _MAX_INSTANCES = int(os.environ.get("TRACY_MCP_MAX_INSTANCES", "4"))
 _DISCONNECTED_TTL_S = float(os.environ.get("TRACY_MCP_DISCONNECTED_TTL_S", "1800"))
+_FILE_IDLE_TTL_S = float(os.environ.get("TRACY_MCP_FILE_IDLE_TTL_S", "1800"))
 _SWEEP_INTERVAL_S = float(os.environ.get("TRACY_MCP_SWEEP_INTERVAL_S", "300"))
+_DEFAULT_LIVE_MEMORY_LIMIT_MB = int(os.environ.get("TRACY_MCP_LIVE_MEMORY_LIMIT_MB", "8192"))
 
 
 class Task:
@@ -273,17 +305,22 @@ def _shutdown_worker(worker: object | None) -> None:
         pass
 
 
-def _evict_disconnected_idle() -> list[str]:
-    """Unload live instances that disconnected and have sat idle past the TTL.
-
-    Runs on the periodic sweep. A grace period (_DISCONNECTED_TTL_S) is kept
-    so a capture is still around for post-session analysis right after the
-    target disconnects — this only reclaims sessions that were forgotten.
+def _evict_idle() -> list[str]:
+    """Unload instances idle past their TTL: disconnected live instances
+    past _DISCONNECTED_TTL_S, file-loaded captures past _FILE_IDLE_TTL_S
+    (safe — already durably on disk). Connected live instances are never
+    touched here.
     """
     now = time.time()
     evicted = []
     for name, inst in list(instances.items()):
-        if inst.path is not None or inst.worker is None:
+        if inst.path is not None:
+            if now - inst.last_used >= _FILE_IDLE_TTL_S:
+                del instances[name]
+                _shutdown_worker(inst.worker)
+                evicted.append(name)
+            continue
+        if inst.worker is None:
             continue
         try:
             connected = inst.worker.is_connected()
@@ -320,12 +357,25 @@ def _evict_for_capacity(exclude: str | None = None) -> str | None:
 
 
 async def _sweep_loop() -> None:
+    """Periodic eviction sweep, doubling as a heartbeat — distinguishes a
+    crashed process (see faulthandler) from a hung one (stops producing
+    these lines). flush=True since a hang is exactly when buffering would
+    hide the last known-good timestamp.
+    """
+    start = time.time()
     while True:
         await asyncio.sleep(_SWEEP_INTERVAL_S)
         try:
-            _evict_disconnected_idle()
+            evicted = _evict_idle()
         except Exception:
-            pass
+            evicted = None
+        print(
+            f"[heartbeat] uptime={int(time.time() - start)}s "
+            f"instances={len(instances)} tasks={len(tasks)} "
+            f"evicted={evicted or 'none'}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 @asynccontextmanager
@@ -381,10 +431,12 @@ async def list_instances() -> list[dict]:
     process runs (it's a singleton shared across all MCP clients) until
     unloaded. `idle_seconds` is how long since this instance was last used
     via `eval`/`save_trace` — call `unload_capture` on ones you no longer
-    need instead of waiting for automatic eviction. Automatic eviction only
-    kicks in at the `TRACY_MCP_MAX_INSTANCES` cap (LRU, connected live
-    instances are never evicted) or after a disconnected live instance sits
-    idle past `TRACY_MCP_DISCONNECTED_TTL_S`.
+    need instead of waiting for automatic eviction. Automatic eviction kicks
+    in at the `TRACY_MCP_MAX_INSTANCES` cap (LRU, connected live instances
+    are never evicted), after a disconnected live instance sits idle past
+    `TRACY_MCP_DISCONNECTED_TTL_S`, or after a file-loaded capture sits idle
+    past `TRACY_MCP_FILE_IDLE_TTL_S` — it's already durably on disk, so
+    nothing is lost; just `load_capture` it again.
 
     `background_done: false` means a just-loaded capture is still building
     zone/symbol statistics on a background thread — `get_all_zone_stats`
@@ -432,11 +484,25 @@ async def discover_instances(port_range: str = "8086-8095") -> list[dict]:
 
 
 @mcp_server.tool()
-async def live_connect(address: str = "127.0.0.1", port: int = 8086, alias: str | None = None) -> str:
+async def live_connect(
+    address: str = "127.0.0.1",
+    port: int = 8086,
+    alias: str | None = None,
+    memory_limit_mb: int | None = None,
+) -> str:
     """
     Connect to a live running Tracy-instrumented application.
 
-    Wraps Worker(addr, port, memoryLimit=-1). Returns the instance_id.
+    Wraps Worker(addr, port, memoryLimit). A long-lived session on a busy
+    target grows unbounded otherwise -- every zone/message/memory event
+    stays resident until disconnect, which can OOM-kill this whole process
+    rather than just the one instance. memory_limit_mb defaults to
+    TRACY_MCP_LIVE_MEMORY_LIMIT_MB (8192 if unset); pass 0 to disable.
+    Hitting the limit disconnects that Worker cleanly (Tracy's own
+    QueryTerminate path) -- already-collected data stays queryable and
+    save_trace-able, it just stops growing.
+
+    Returns the instance_id.
     """
     if not tracy_server:
         return "Error: Tracy Server bindings not found."
@@ -458,8 +524,10 @@ async def live_connect(address: str = "127.0.0.1", port: int = 8086, alias: str 
                 f"the target against a matching Tracy version."
             )
 
+    limit_mb = _DEFAULT_LIVE_MEMORY_LIMIT_MB if memory_limit_mb is None else memory_limit_mb
+    memory_limit = limit_mb * 1024 * 1024 if limit_mb > 0 else -1
     try:
-        w = tracy_server.Worker(address, port)
+        w = tracy_server.Worker(address, port, memory_limit)
     except Exception as e:
         return f"Failed to connect: {str(e)}"
 
@@ -508,8 +576,9 @@ async def live_connect(address: str = "127.0.0.1", port: int = 8086, alias: str 
     evicted = _evict_for_capacity(exclude=name)
     instances[name] = TracyInstance(name, w)
     note = f" (evicted idle instance '{evicted}' to stay under the {_MAX_INSTANCES}-instance cap)" if evicted else ""
+    limit_note = f"{limit_mb}MB memory limit" if limit_mb > 0 else "no memory limit"
     return (
-        f"Connected to live instance as '{name}'{note}. "
+        f"Connected to live instance as '{name}'{note} ({limit_note}). "
         f"Before your first eval, read resources tracy://prompt "
         f"(analysis guidance) and tracy://eval-guide (ctx object model, "
         f"ns time units, srcloc IDs)."
@@ -822,6 +891,13 @@ async def shutdown_server() -> str:
 
 
 if __name__ == "__main__":
+    # Enabled before anything touches the native bindings, so a genuine
+    # fatal crash (segfault etc.) writes a thread-state traceback to disk
+    # before the process dies — works on Windows via
+    # SetUnhandledExceptionFilter, same mechanism as POSIX signals.
+    _crash_log_fh = open(_CRASH_LOG_FILE, "a", encoding="utf-8")
+    faulthandler.enable(file=_crash_log_fh, all_threads=True)
+
     atexit.register(_cleanup_pid_files)
 
     if _TRANSPORT not in ("sse", "streamable-http"):

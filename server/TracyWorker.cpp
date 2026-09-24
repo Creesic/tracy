@@ -1788,6 +1788,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
                     if( !t->timeline.empty() )
                     {
                         uint8_t countMap[64*1024];
+                        memset( countMap, 0, sizeof( countMap ) );
                         // Don't touch thread compression cache in a thread.
                         ProcessTimeline( countMap, t->timeline, m_data.localThreadCompress.DecompressMustRaw( t->id ) );
                     }
@@ -2886,6 +2887,7 @@ void Worker::Exec()
         m_captureTime = welcome.epoch;
         m_executableTime = welcome.exectime;
         m_ignoreMemFreeFaults = ( welcome.flags & WelcomeFlag::OnDemand ) || ( welcome.flags & WelcomeFlag::IgnoreMemFaults );
+        m_ignoreMemAllocFaults = welcome.flags & WelcomeFlag::IgnoreMemFaults;
         m_ignoreFrameEndFaults = welcome.flags & WelcomeFlag::OnDemand;
         m_data.cpuArch = (CpuArchitecture)welcome.cpuArch;
         m_codeTransfer = welcome.flags & WelcomeFlag::CodeTransfer;
@@ -4175,9 +4177,9 @@ void Worker::AddCallstackAllocPayload( const char* data )
         CallstackFrame cf;
         memcpy( &cf.line, data, 4 ); data += 4;
         memcpy( &sz, data, 2 ); data += 2;
-        cf.name = StoreString( data, sz ).idx; data += sz;
+        cf.name = StringIdx( StoreString( data, sz ).idx ); data += sz;
         memcpy( &sz, data, 2 ); data += 2;
-        cf.file = StoreString( data, sz ).idx; data += sz;
+        cf.file = StringIdx( StoreString( data, sz ).idx ); data += sz;
         cf.symAddr = 0;
         CallstackFrameData cfd = { &cf, 1 };
 
@@ -6308,17 +6310,36 @@ void Worker::ProcessGpuZoneAnnotation( const QueueGpuZoneAnnotation& ev )
     note->second[ev.noteId] = ev.value;
 }
 
+static MemEvent* MemDataFree( MemData& memdata, unordered_flat_map<uint64_t, size_t>::iterator it, int64_t time, uint16_t thread )
+{
+    memdata.frees.push_back( it->second );
+    auto& mem = memdata.data[it->second];
+    mem.SetTimeThreadFree( time, thread );
+    memdata.usage -= mem.Size();
+    memdata.active.erase( it );
+    return &mem;
+}
+
 MemEvent* Worker::ProcessMemAllocImpl( MemData& memdata, const QueueMemAlloc& ev )
 {
-    if( memdata.active.find( ev.ptr ) != memdata.active.end() )
-    {
-        MemAllocTwiceFailure( ev.thread );
-        return nullptr;
-    }
-
     const auto time = TscTime( RefTime( m_refTimeSerial, ev.time ) );
     if( m_data.lastTime < time ) m_data.lastTime = time;
     NoticeThread( ev.thread );
+
+    const auto thread = CompressThread( ev.thread );
+
+    auto it = memdata.active.find( ev.ptr );
+    if( it != memdata.active.end() )
+    {
+        if( !m_ignoreMemAllocFaults )
+        {
+            MemAllocTwiceFailure( ev.thread );
+            return nullptr;
+        }
+
+        MemDataFree( memdata, it, time, thread );
+        MemAllocChanged( memdata, time );
+    }
 
     assert( memdata.data.empty() || memdata.data.back().TimeAlloc() <= time );
 
@@ -6334,7 +6355,7 @@ MemEvent* Worker::ProcessMemAllocImpl( MemData& memdata, const QueueMemAlloc& ev
     auto& mem = memdata.data.push_next();
     mem.SetPtr( ptr );
     mem.SetSize( size );
-    mem.SetTimeThreadAlloc( time, CompressThread( ev.thread ) );
+    mem.SetTimeThreadAlloc( time, thread );
     mem.SetTimeThreadFree( -1, 0 );
     mem.SetCsAlloc( 0 );
     mem.csFree.SetVal( 0 );
@@ -6372,14 +6393,9 @@ MemEvent* Worker::ProcessMemFreeImpl( MemData& memdata, const QueueMemFree& ev )
     if( m_data.lastTime < time ) m_data.lastTime = time;
     NoticeThread( ev.thread );
 
-    memdata.frees.push_back( it->second );
-    auto& mem = memdata.data[it->second];
-    mem.SetTimeThreadFree( time, CompressThread( ev.thread ) );
-    memdata.usage -= mem.Size();
-    memdata.active.erase( it );
-
+    auto mem = MemDataFree( memdata, it, time, CompressThread( ev.thread ) );
     MemAllocChanged( memdata, time );
-    return &mem;
+    return mem;
 }
 
 MemEvent* Worker::ProcessMemAlloc( const QueueMemAlloc& ev )
@@ -9060,7 +9076,7 @@ void Worker::CacheSource( const StringRef& str, const StringIdx& image )
     {
         CacheSourceFromFile( file );
     }
-    else if( execTime != 0 )
+    else if( execTime != 0 && m_codeTransfer )
     {
         QuerySourceFile( file, image.Active() ? GetString( image ) : nullptr );
     }

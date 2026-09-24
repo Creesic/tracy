@@ -2,12 +2,15 @@ Note: There is no guarantee that version mismatched client and server will
 be able to talk with each other. Network protocol breakages won't be listed
 here.
 
-vx.xx.x (2026-xx-xx)
+v0.14.0 (2026-08-09)
 --------------------
 
 - API break: removed "secure" variants of memory alloc and free macros. The
   secure code path is now always enabled. Migrate by removing "Secure" from
   the macros you use, e.g. TracySecureAlloc(...) -> TracyAlloc(...).
+- Added printf-style variants of the C API zone text and name macros:
+  TracyCZoneTextF and TracyCZoneNameF now accept a format string and
+  arguments, instead of a fixed-length text buffer.
 - Added tracy-capture-daemon for automated multi-client trace capture.
 - Added tracy-merge utility for combining multiple trace files into one.
 - Added support for Windows on ARM64 with MSVC.
@@ -161,6 +164,8 @@ vx.xx.x (2026-xx-xx)
 - Added TRACY_DISALLOW_HW_TIMER define for virtualized environments and WSL2,
   which may not have reliable access to hardware timer registers. Falls back
   to standard library timer with reduced resolution.
+- Fixed TRACY_NO_CODE_TRANSFER define. It didn't prevent source code transfer
+  before.
 - Fixed DPI scaling on macOS.
 - Thread names are no longer truncated to 15 characters on Apple.
 - Executable path is now inspected when looking for PDB files on Windows.
@@ -226,9 +231,12 @@ vx.xx.x (2026-xx-xx)
 - The profiler can no longer be built with the statistics disabled.
 - Fixed NVCC builds.
 - Fixed possible lockups in Vulkan timer calibration loop.
-- The flame graph view now supports zooming in and panning with the mouse.
-- Sampling flame graph items can be now also grouped by name, in addition
-  to symbol address.
+- Flame graph improvements.
+  - The flame graph view now supports zooming in and panning with the mouse.
+  - Sampling flame graph items can be now also grouped by name, in addition
+    to symbol address.
+  - Sampling flame graph no longer omits display of unknown symbols. These
+    are now aggregated into blocks named after the executable image.
 - General application crash information polish in the profiler UI.
 - The achievements system has been converted to use markdown renderer.
 - Offline symbol resolution with the update utility now supports custom
@@ -289,6 +297,9 @@ vx.xx.x (2026-xx-xx)
 - Most windows now have a minimum width, in order to make sure all controls
   provided in the window are visible. Previously it was easy to oversee some
   button that was out of the window draw area.
+- The ignore memory faults functionality (enabled by default if profiling
+  programs on Apple platforms) will now also ignore allocating memory at the
+  same location twice, without an intermediate free. Thanks, Tim Apple!
 
 
 v0.13.1 (2025-12-11)
