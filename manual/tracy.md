@@ -11,7 +11,7 @@ The user manual
 
 **Bartosz Taudul** [\<wolf@nereid.pl\>](mailto:wolf@nereid.pl)
 
-2026-08-06 <https://github.com/wolfpld/tracy>
+2026-08-22 <https://github.com/wolfpld/tracy>
 
 # Quick overview {#quick-overview .unnumbered}
 
@@ -400,6 +400,7 @@ Each enabled option is passed down to your program as a preprocessor macro of th
 | `TRACY_NO_SYSTEM_TRACING` | Prevent the client from accessing kernel data, which disables all system-level tracing (section [3.18](#automated)). |
 | `TRACY_NO_CONTEXT_SWITCH` | Disable capture of context switch data (section [3.18.3](#contextswitches)). |
 | `TRACY_NO_SAMPLING` | Disable call stack sampling (section [3.18.5](#sampling)). |
+| `TRACY_NO_WAIT_STACKS` | Disable capture of context switch call stacks, while keeping the context switch events themselves (section [3.18.5.1](#waitstacks)). |
 | `TRACY_NO_VSYNC_CAPTURE` | Disable capture of hardware Vsync events (section [3.18.8](#vsync)). |
 | `TRACY_NO_CODE_TRANSFER` | Disable retrieval of the program's machine code and source files (section [3.18.7](#executableretrieval)). |
 | `TRACY_NO_FRAME_IMAGE` | Disable frame image support, along with the compression thread it needs (section [3.3.3](#frameimages)). |
@@ -425,14 +426,14 @@ Each enabled option is passed down to your program as a preprocessor macro of th
 | `TRACY_DISALLOW_HW_TIMER` | Never use the hardware timer, even if it *appears* to be available. Requires `TRACY_TIMER_FALLBACK`. |
 |  |  |
 | **Special environments** |  |
-| `TRACY_DELAYED_INIT` | Gather the profiler data into a single structure, initialized on first use instead of at load time (section [2.1.9](#multidll)). |
-| `TRACY_MANUAL_LIFETIME` | Provide the `StartupProfiler` and `ShutdownProfiler` functions for manual profiler lifetime management. Requires `TRACY_DELAYED_INIT` (section [2.1.9](#multidll)). |
+| `TRACY_MANUAL_LIFETIME` | Provide the `StartupProfiler` and `ShutdownProfiler` functions for manual profiler lifetime management (section [2.1.9](#multidll)). |
 | `TRACY_PLATFORM_HEADER` | Path to a header providing the `TRACY_HAS_CUSTOM_*` hooks for an unsupported platform (section [2.1.11](#customplatform)). |
 | `TRACY_PATCHABLE_NOPSLEDS` | Emit nopsleds in front of the timer reads, so that system-level tools such as *rr* can patch them. |
 |  |  |
 | **Diagnostics** |  |
 | `TRACY_VERBOSE` | Print detailed information about the detected features to the standard error output (section [2.1.12](#troubleshooting)). |
 | `TRACY_NO_INTERNAL_MESSAGE` | Don't send the profiler's own diagnostic messages to the server (section [2.1.12](#troubleshooting)). |
+| `TRACY_ASSERT` | Route the client's internal checks through a custom assert implementation, instead of the standard `assert`. Define `TRACY_ASSERT(condition)` before including any Tracy header; the macro must accept a single condition argument. |
 
 _Tracy CMake options_
 
@@ -477,6 +478,8 @@ You should note that if on-demand profiling is *disabled* (which is the default)
 
 [^12]: This memory is never released, but the profiler reuses it for collection of other events.
 
+In on-demand mode, each connection to the server is a separate capture. A zone is included in a capture only if both its begin and end events occur during that connection: if the connection is lost and re-established while a zone is open, the end event is dropped and the zone remains unclosed in the previous capture. Zones that begin and end during a later connection, even while an older zone is still open, appear in the new capture as top-level zones.
+
 > [!CAUTION]
 > **Caveats**
 >
@@ -508,9 +511,9 @@ For that, you need a *profiler DLL* to which your executable and the other DLLs 
 
 If you are targeting Windows with Microsoft Visual Studio or MinGW, add the `TRACY_IMPORTS` define to your application.
 
-If you are experiencing crashes or freezes when manually loading/unloading a separate DLL with Tracy integration, you might want to try defining both `TRACY_DELAYED_INIT` and `TRACY_MANUAL_LIFETIME` macros.
+If you are experiencing crashes or freezes when manually loading/unloading a separate DLL with Tracy integration, you might want to try defining the `TRACY_MANUAL_LIFETIME` macro.
 
-`TRACY_DELAYED_INIT` enables a path where profiler data is gathered into one structure and initialized on the first request rather than statically at the DLL load at the expense of atomic load on each request to the profiler data. `TRACY_MANUAL_LIFETIME` flag augments this behavior to provide manual `StartupProfiler` and `ShutdownProfiler` functions that allow you to create and destroy the profiler data manually. This manual management removes the need to do an atomic load on each call and lets you define an appropriate place to free the resources.
+`TRACY_MANUAL_LIFETIME` provides the `StartupProfiler` and `ShutdownProfiler` functions that allow you to create and destroy the profiler data manually, letting you define an appropriate place to free the resources. Under `TRACY_MANUAL_LIFETIME` the profiler does not exist until `StartupProfiler()` is called and ceases to exist after `ShutdownProfiler()`. Using any instrumentation, zones, locks, plots, messages, and so on before startup or after shutdown is an error. Use `TracyIsStarted` to guard instrumentation that may run conditionally. If the profiler has been initialized, it must be shut down before the program exits.
 
 > [!IMPORTANT]
 > **Keep everything consistent**
@@ -1510,10 +1513,13 @@ Tracy can monitor the memory usage of your application. Knowledge about each per
 
 - Memory allocation hot-spot tree.
 
-To mark memory events, use the `TracyAlloc(ptr, size)` and `TracyFree(ptr)` macros. Typically you would do that in overloads of `operator new` and `operator delete`, for example:
+To mark memory events, use the `TracyAlloc(ptr, size)` and `TracyFree(ptr)` macros. Typically, you would place them in overloads of `operator new` and `operator delete`. The order in which memory events actually occur must match the order reported to the profiler, so a mutex or similar synchronization primitive is required to make the whole operation atomic. Here is an example implementation:
+
+    std::mutex memoryLock;
 
     void* operator new(std::size_t count)
     {
+        std::lock_guard lock(memoryLock);
         auto ptr = malloc(count);
         TracyAlloc(ptr, count);
         return ptr;
@@ -1521,6 +1527,7 @@ To mark memory events, use the `TracyAlloc(ptr, size)` and `TracyFree(ptr)` macr
 
     void operator delete(void* ptr) noexcept
     {
+        std::lock_guard lock(memoryLock);
         TracyFree(ptr);
         free(ptr);
     }
@@ -1560,6 +1567,8 @@ Certain memory allocator designs ("arena allocators") use an always-incrementing
 Tracy provides bindings for profiling OpenGL, Vulkan, Direct3D 11, Direct3D 12, Metal, OpenCL, CUDA and WebGPU execution time on GPU.
 
 Note that the CPU and GPU timers may be unsynchronized unless you create a calibrated context, but the availability of calibrated contexts is limited. You can try to correct the desynchronization of uncalibrated contexts in the profiler's options (section [5.4](#options)).
+
+GPU contexts are identified by a process-wide unique id, assigned when the context is created (the context creation macros do this automatically). Ids are 8 bits wide (0--255) and are allocated sequentially, so a process can create at most 256 GPU contexts.
 
 > [!TIP]
 > **Check the scope**
@@ -2198,7 +2207,7 @@ Moreover, there are two sets of functions described below. The standard set send
 
 A GPU context can be created with the `___tracy_emit_gpu_new_context` function (or the serialized variant). You'll need to specify:
 
-- `context` -- a unique context id.
+- `context` -- a unique context id (8-bit, 0--255; see section [3.10](#gpuprofiling)).
 
 - `gpuTime` -- an initial GPU timestamp.
 
@@ -2536,7 +2545,6 @@ You can integrate Tracy with CMake by adding the git submodule folder as a subdi
     option(TRACY_ENABLE "" ON)
     # must be enabled
     option(TRACY_Fortran "" ON)
-    option(TRACY_DELAYED_INIT "" ON)
     option(TRACY_MANUAL_LIFETIME "" ON)
     add_subdirectory(3rdparty/tracy)  # target: TracyClientF90 or alias Tracy::TracyClientF90
 
@@ -2559,7 +2567,6 @@ For using Link-Time optimizations, link both `Tracy::TracyClient` and `Tracy::Tr
 > When using CMake 3.11 or newer, you can use Tracy via CMake FetchContent. In this case, you do not need to add a git submodule for Tracy manually. Add this to your CMakeLists.txt:
 >
 >     option(TRACY_Fortran "" ON)
->     option(TRACY_DELAYED_INIT "" ON)
 >     option(TRACY_MANUAL_LIFETIME "" ON)
 >
 >     FetchContent_Declare(
@@ -2806,6 +2813,8 @@ The sampling functionality also captures call stacks for context switch events. 
 3.  Unexpected waits, which should be immediately taken care of. After all, what's the point of profiling and optimizing your program if it is constantly waiting for something? An example of such an unexpected wait may be some anti-virus service interfering with each of your file read operations. In this case, you could have assumed that the system would buffer a large chunk of the data after the first read to make it immediately available to the application in the following calls.
 
 Since context switch samples are captured at scheduling events rather than by the statistical sampling timer, they are not an unbiased measure of program execution. They are therefore only displayed on the timeline and in the wait stacks window, and are excluded from the sampling statistics, the per-symbol sample data, child calls, entry stacks, flame graph, zone call stack reconstruction, and so on.
+
+Collection of wait stacks makes the kernel walk the stack at context switch events, which may add considerable overhead on weaker hardware. Use the `TRACY_NO_WAIT_STACKS` macro to disable capture of wait stacks, while still keeping the context switch events themselves.
 
 > [!CAUTION]
 > **Platform differences**
@@ -3758,7 +3767,7 @@ To define a time range, drag the left mouse button over the timeline view while 
 
   - * Find zone* -- this will limit find zone results. See chapter [5.7](#findzone) for more details.
 
-  - * Statistics* -- selecting this option will limit statistics results. See chapter [5.6](#statistics) for more details.
+  - * Statistics* -- selecting this option will limit statistics results (section [5.6](#statistics)), as well as the sample statistics shown in the source view (section [5.17](#sourceview)).
 
   - * Flame graph* -- limits flame graph results. Refer to chapter [5.9](#flamegraph).
 

@@ -530,6 +530,7 @@ Each enabled option is passed down to your program as a preprocessor macro of th
 \texttt{TRACY\_NO\_SYSTEM\_TRACING} & Prevent the client from accessing kernel data, which disables all system-level tracing (section~\ref{automated}). \\
 \texttt{TRACY\_NO\_CONTEXT\_SWITCH} & Disable capture of context switch data (section~\ref{contextswitches}). \\
 \texttt{TRACY\_NO\_SAMPLING} & Disable call stack sampling (section~\ref{sampling}). \\
+\texttt{TRACY\_NO\_WAIT\_STACKS} & Disable capture of context switch call stacks, while keeping the context switch events themselves (section~\ref{waitstacks}). \\
 \texttt{TRACY\_NO\_VSYNC\_CAPTURE} & Disable capture of hardware Vsync events (section~\ref{vsync}). \\
 \texttt{TRACY\_NO\_CODE\_TRANSFER} & Disable retrieval of the program's machine code and source files (section~\ref{executableretrieval}). \\
 \texttt{TRACY\_NO\_FRAME\_IMAGE} & Disable frame image support, along with the compression thread it needs (section~\ref{frameimages}). \\
@@ -555,14 +556,14 @@ Each enabled option is passed down to your program as a preprocessor macro of th
 \texttt{TRACY\_DISALLOW\_HW\_TIMER} & Never use the hardware timer, even if it \emph{appears} to be available. Requires \texttt{TRACY\_TIMER\_FALLBACK}. \\
 & \\
 \textbf{Special environments} & \\
-\texttt{TRACY\_DELAYED\_INIT} & Gather the profiler data into a single structure, initialized on first use instead of at load time (section~\ref{multidll}). \\
-\texttt{TRACY\_MANUAL\_LIFETIME} & Provide the \texttt{StartupProfiler} and \texttt{ShutdownProfiler} functions for manual profiler lifetime management. Requires \texttt{TRACY\_DELAYED\_INIT} (section~\ref{multidll}). \\
+\texttt{TRACY\_MANUAL\_LIFETIME} & Provide the \texttt{StartupProfiler} and \texttt{ShutdownProfiler} functions for manual profiler lifetime management (section~\ref{multidll}). \\
 \texttt{TRACY\_PLATFORM\_HEADER} & Path to a header providing the \texttt{TRACY\_HAS\_CUSTOM\_*} hooks for an unsupported platform (section~\ref{customplatform}). \\
 \texttt{TRACY\_PATCHABLE\_NOPSLEDS} & Emit nopsleds in front of the timer reads, so that system-level tools such as \emph{rr} can patch them. \\
 & \\
 \textbf{Diagnostics} & \\
 \texttt{TRACY\_VERBOSE} & Print detailed information about the detected features to the standard error output (section~\ref{troubleshooting}). \\
 \texttt{TRACY\_NO\_INTERNAL\_MESSAGE} & Don't send the profiler's own diagnostic messages to the server (section~\ref{troubleshooting}). \\
+\texttt{TRACY\_ASSERT} & Route the client's internal checks through a custom assert implementation, instead of the standard \texttt{assert}. Define \texttt{TRACY\_ASSERT(condition)} before including any Tracy header; the macro must accept a single condition argument. \\
 \end{longtable}
 \end{footnotesize}
 
@@ -616,6 +617,8 @@ By default, Tracy will begin profiling even before the program enters the \textt
 
 You should note that if on-demand profiling is \emph{disabled} (which is the default), then the recorded events will be stored in the system memory until a server connection is made and the data can be uploaded\footnote{This memory is never released, but the profiler reuses it for collection of other events.}. Depending on the amount of the things profiled, the requirements for event storage can quickly grow up to a couple of gigabytes. Furthermore, since this data is no longer available after the initial connection, you won't be able to perform a second connection to a client unless the on-demand mode is used.
 
+In on-demand mode, each connection to the server is a separate capture. A zone is included in a capture only if both its begin and end events occur during that connection: if the connection is lost and re-established while a zone is open, the end event is dropped and the zone remains unclosed in the previous capture. Zones that begin and end during a later connection, even while an older zone is still open, appear in the new capture as top-level zones.
+
 \begin{bclogo}[
 noborder=true,
 couleur=black!5,
@@ -647,9 +650,9 @@ For that, you need a \emph{profiler DLL} to which your executable and the other 
 
 If you are targeting Windows with Microsoft Visual Studio or MinGW, add the \texttt{TRACY\_IMPORTS} define to your application.
 
-If you are experiencing crashes or freezes when manually loading/unloading a separate DLL with Tracy integration, you might want to try defining both \texttt{TRACY\_DELAYED\_INIT} and \texttt{TRACY\_MANUAL\_LIFETIME} macros.
+If you are experiencing crashes or freezes when manually loading/unloading a separate DLL with Tracy integration, you might want to try defining the \texttt{TRACY\_MANUAL\_LIFETIME} macro.
 
-\texttt{TRACY\_DELAYED\_INIT} enables a path where profiler data is gathered into one structure and initialized on the first request rather than statically at the DLL load at the expense of atomic load on each request to the profiler data. \texttt{TRACY\_MANUAL\_LIFETIME} flag augments this behavior to provide manual \texttt{StartupProfiler} and \texttt{ShutdownProfiler} functions that allow you to create and destroy the profiler data manually. This manual management removes the need to do an atomic load on each call and lets you define an appropriate place to free the resources.
+\texttt{TRACY\_MANUAL\_LIFETIME} provides the \texttt{StartupProfiler} and \texttt{ShutdownProfiler} functions that allow you to create and destroy the profiler data manually, letting you define an appropriate place to free the resources. Under \texttt{TRACY\_MANUAL\_LIFETIME} the profiler does not exist until \texttt{StartupProfiler()} is called and ceases to exist after \texttt{ShutdownProfiler()}. Using any instrumentation, zones, locks, plots, messages, and so on before startup or after shutdown is an error. Use \texttt{TracyIsStarted} to guard instrumentation that may run conditionally. If the profiler has been initialized, it must be shut down before the program exits.
 
 \begin{bclogo}[
 noborder=true,
@@ -1712,11 +1715,14 @@ Tracy can monitor the memory usage of your application. Knowledge about each per
 \item Memory allocation hot-spot tree.
 \end{itemize}
 
-To mark memory events, use the \texttt{TracyAlloc(ptr, size)} and \texttt{TracyFree(ptr)} macros. Typically you would do that in overloads of \texttt{operator new} and \texttt{operator delete}, for example:
+To mark memory events, use the \texttt{TracyAlloc(ptr, size)} and \texttt{TracyFree(ptr)} macros. Typically, you would place them in overloads of \texttt{operator new} and \texttt{operator delete}. The order in which memory events actually occur must match the order reported to the profiler, so a mutex or similar synchronization primitive is required to make the whole operation atomic. Here is an example implementation:
 
 \begin{lstlisting}
+std::mutex memoryLock;
+
 void* operator new(std::size_t count)
 {
+    std::lock_guard lock(memoryLock);
     auto ptr = malloc(count);
     TracyAlloc(ptr, count);
     return ptr;
@@ -1724,6 +1730,7 @@ void* operator new(std::size_t count)
 
 void operator delete(void* ptr) noexcept
 {
+    std::lock_guard lock(memoryLock);
     TracyFree(ptr);
     free(ptr);
 }
@@ -1770,6 +1777,8 @@ Certain memory allocator designs (\enquote{arena allocators}) use an always-incr
 Tracy provides bindings for profiling OpenGL, Vulkan, Direct3D 11, Direct3D 12, Metal, OpenCL, CUDA and WebGPU execution time on GPU.
 
 Note that the CPU and GPU timers may be unsynchronized unless you create a calibrated context, but the availability of calibrated contexts is limited. You can try to correct the desynchronization of uncalibrated contexts in the profiler's options (section~\ref{options}).
+
+GPU contexts are identified by a process-wide unique id, assigned when the context is created (the context creation macros do this automatically). Ids are 8 bits wide (0--255) and are allocated sequentially, so a process can create at most 256 GPU contexts.
 
 \begin{bclogo}[
 noborder=true,
@@ -2475,7 +2484,7 @@ Moreover, there are two sets of functions described below. The standard set send
 A GPU context can be created with the \texttt{\_\_\_tracy\_emit\_gpu\_new\_context} function (or the serialized variant). You'll need to specify:
 
 \begin{itemize}
-\item \texttt{context} -- a unique context id.
+\item \texttt{context} -- a unique context id (8-bit, 0--255; see section~\ref{gpuprofiling}).
 \item \texttt{gpuTime} -- an initial GPU timestamp.
 \item \texttt{period} -- the timestamp period of the GPU.
 \item \texttt{flags} -- the flags to use.
@@ -2828,7 +2837,6 @@ You can integrate Tracy with CMake by adding the git submodule folder as a subdi
 option(TRACY_ENABLE "" ON)
 # must be enabled
 option(TRACY_Fortran "" ON)
-option(TRACY_DELAYED_INIT "" ON)
 option(TRACY_MANUAL_LIFETIME "" ON)
 add_subdirectory(3rdparty/tracy)  # target: TracyClientF90 or alias Tracy::TracyClientF90
 \end{lstlisting}
@@ -2862,7 +2870,6 @@ When using CMake 3.11 or newer, you can use Tracy via CMake FetchContent. In thi
 
 \begin{lstlisting}
 option(TRACY_Fortran "" ON)
-option(TRACY_DELAYED_INIT "" ON)
 option(TRACY_MANUAL_LIFETIME "" ON)
 
 FetchContent_Declare(
@@ -3152,6 +3159,8 @@ The sampling functionality also captures call stacks for context switch events. 
 \end{enumerate}
 
 Since context switch samples are captured at scheduling events rather than by the statistical sampling timer, they are not an unbiased measure of program execution. They are therefore only displayed on the timeline and in the wait stacks window, and are excluded from the sampling statistics, the per-symbol sample data, child calls, entry stacks, flame graph, zone call stack reconstruction, and so on.
+
+Collection of wait stacks makes the kernel walk the stack at context switch events, which may add considerable overhead on weaker hardware. Use the \texttt{TRACY\_NO\_WAIT\_STACKS} macro to disable capture of wait stacks, while still keeping the context switch events themselves.
 
 \begin{bclogo}[
 noborder=true,
@@ -4236,7 +4245,7 @@ To define a time range, drag the \LMB{}~left mouse button over the timeline view
 \item \faRuler{}~Set time range for:
 \begin{itemize}
 \item \emph{\faMagnifyingGlass{}~Find zone} -- this will limit find zone results. See chapter~\ref{findzone} for more details.
-\item \emph{\faArrowUpWideShort{}~Statistics} -- selecting this option will limit statistics results. See chapter~\ref{statistics} for more details.
+\item \emph{\faArrowUpWideShort{}~Statistics} -- selecting this option will limit statistics results (section~\ref{statistics}), as well as the sample statistics shown in the source view (section~\ref{sourceview}).
 \item \emph{\faFireFlameCurved{}~Flame graph} -- limits flame graph results. Refer to chapter~\ref{flamegraph}.
 \item \emph{\faHourglassHalf{}~Wait stacks} -- limits wait stacks results. Refer to chapter~\ref{stackwindows}.
 \item \emph{\faMemory{}~Memory} -- limits memory results. Read more about this in chapter~\ref{memorywindow}.

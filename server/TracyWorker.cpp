@@ -56,7 +56,7 @@ static bool SourceFileValid( const char* fn, uint64_t olderThan )
 static const uint8_t FileHeader[8] { 't', 'r', 'a', 'c', 'y', Version::Major, Version::Minor, Version::Patch };
 constexpr size_t FileHeaderMagic = 5;
 static const int CurrentVersion = FileVersion( Version::Major, Version::Minor, Version::Patch );
-static const int MinSupportedVersion = FileVersion( 0, 9, 0 );
+static const int MinSupportedVersion = FileVersion( 0, 11, 0 );
 
 
 static void UpdateLockCountLockable( LockMap& lockmap, size_t pos )
@@ -587,16 +587,9 @@ Worker::Worker( FileRead& f, EventType::Type eventMask, bool bgTasks, bool allow
     f.Read( m_data.cpuManufacturer, 12 );
     m_data.cpuManufacturer[12] = '\0';
 
-    if( fileVer >= FileVersion( 0, 9, 2 ) )
-    {
-        uint8_t flag;
-        f.Read( flag );
-        m_onDemand = flag;
-    }
-    else
-    {
-        m_onDemand = m_data.frameOffset != 0;
-    }
+    uint8_t flag;
+    f.Read( flag );
+    m_onDemand = flag;
 
     uint64_t sz;
     {
@@ -3217,22 +3210,23 @@ void Worker::DispatchFailure( const QueueItem& ev, const char*& ptr )
     else
     {
         uint8_t sz8;
-        uint16_t sz;
+        uint16_t sz16;
+        uint32_t sz;
         switch( ev.hdr.type )
         {
         case QueueType::SingleStringData:
             ptr += sizeof( QueueHeader );
-            memcpy( &sz, ptr, sizeof( sz ) );
-            ptr += sizeof( sz );
-            sz += ProtocolOffset8Bit;
+            memcpy( &sz16, ptr, sizeof( sz16 ) );
+            ptr += sizeof( sz16 );
+            sz = sz16 + ProtocolOffset8Bit;
             AddSingleStringFailure( ptr, sz );
             ptr += sz;
             break;
         case QueueType::SecondStringData:
             ptr += sizeof( QueueHeader );
-            memcpy( &sz, ptr, sizeof( sz ) );
-            ptr += sizeof( sz );
-            sz += ProtocolOffset8Bit;
+            memcpy( &sz16, ptr, sizeof( sz16 ) );
+            ptr += sizeof( sz16 );
+            sz = sz16 + ProtocolOffset8Bit;
             AddSecondString( ptr, sz );
             ptr += sz;
             break;
@@ -3434,22 +3428,23 @@ bool Worker::DispatchProcess( const QueueItem& ev, const char*& ptr )
     else
     {
         uint8_t sz8;
-        uint16_t sz;
+        uint16_t sz16;
+        uint32_t sz;
         switch( ev.hdr.type )
         {
         case QueueType::SingleStringData:
             ptr += sizeof( QueueHeader );
-            memcpy( &sz, ptr, sizeof( sz ) );
-            ptr += sizeof( sz );
-            sz += ProtocolOffset8Bit;
+            memcpy( &sz16, ptr, sizeof( sz16 ) );
+            ptr += sizeof( sz16 );
+            sz = sz16 + ProtocolOffset8Bit;
             AddSingleString( ptr, sz );
             ptr += sz;
             return true;
         case QueueType::SecondStringData:
             ptr += sizeof( QueueHeader );
-            memcpy( &sz, ptr, sizeof( sz ) );
-            ptr += sizeof( sz );
-            sz += ProtocolOffset8Bit;
+            memcpy( &sz16, ptr, sizeof( sz16 ) );
+            ptr += sizeof( sz16 );
+            sz = sz16 + ProtocolOffset8Bit;
             AddSecondString( ptr, sz );
             ptr += sz;
             return true;
@@ -5843,7 +5838,10 @@ void Worker::ProcessPlotConfig( const QueuePlotConfig& ev )
     plot->format = (PlotValueFormatting)ev.type;
     plot->showSteps = ev.step;
     plot->fill = ev.fill;
-    plot->color = ev.color & 0xFFFFFF;
+    plot->color =
+        ( ( ev.color & 0x0000FF ) << 16 ) |
+        ( ( ev.color & 0x00FF00 )       ) |
+        ( ( ev.color & 0xFF0000 ) >> 16 );
 }
 
 void Worker::ProcessMessage( const QueueMessageMetadata& ev )
@@ -6326,14 +6324,19 @@ MemEvent* Worker::ProcessMemAllocImpl( MemData& memdata, const QueueMemAlloc& ev
     if( m_data.lastTime < time ) m_data.lastTime = time;
     NoticeThread( ev.thread );
 
-    const auto thread = CompressThread( ev.thread );
+    uint64_t tid = ev.thread;
+    auto td = RetrieveThread( tid, m_data.threadDataLast );
+    assert( td );
+    if( td->fiber ) tid = td->fiber->id;
+
+    const auto thread = CompressThread( tid );
 
     auto it = memdata.active.find( ev.ptr );
     if( it != memdata.active.end() )
     {
         if( !m_ignoreMemAllocFaults )
         {
-            MemAllocTwiceFailure( ev.thread );
+            MemAllocTwiceFailure( tid );
             return nullptr;
         }
 
@@ -6393,7 +6396,12 @@ MemEvent* Worker::ProcessMemFreeImpl( MemData& memdata, const QueueMemFree& ev )
     if( m_data.lastTime < time ) m_data.lastTime = time;
     NoticeThread( ev.thread );
 
-    auto mem = MemDataFree( memdata, it, time, CompressThread( ev.thread ) );
+    uint64_t tid = ev.thread;
+    auto td = RetrieveThread( tid, m_data.threadDataLast );
+    assert( td );
+    if( td->fiber ) tid = td->fiber->id;
+
+    auto mem = MemDataFree( memdata, it, time, CompressThread( tid ) );
     MemAllocChanged( memdata, time );
     return mem;
 }

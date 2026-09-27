@@ -121,12 +121,12 @@ set_option(TRACY_NO_CODE_TRANSFER "Disable collection of source code" OFF TracyC
 set_option(TRACY_NO_CONTEXT_SWITCH "Disable capture of context switches" OFF TracyClient)
 set_option(TRACY_NO_EXIT "Client executable does not exit until all profile data is sent to server" OFF TracyClient)
 set_option(TRACY_NO_SAMPLING "Disable call stack sampling" OFF TracyClient)
+set_option(TRACY_NO_WAIT_STACKS "Disable capture of context switch call stacks" OFF TracyClient)
 set_option(TRACY_NO_VERIFY "Disable zone validation for C API" OFF TracyClient)
 set_option(TRACY_NO_VSYNC_CAPTURE "Disable capture of hardware Vsync events" OFF TracyClient)
 set_option(TRACY_NO_FRAME_IMAGE "Disable the frame image support and its thread" OFF TracyClient)
 set_option(TRACY_NO_SYSTEM_TRACING "Disable systrace sampling" OFF TracyClient)
 set_option(TRACY_PATCHABLE_NOPSLEDS "Enable nopsleds for efficient patching by system-level tools (e.g. rr)" OFF TracyClient)
-set_option(TRACY_DELAYED_INIT "Enable delayed initialization of the library (init on first call)" OFF TracyClient)
 set_option(TRACY_MANUAL_LIFETIME "Enable the manual lifetime management of the profile" OFF TracyClient)
 set_option(TRACY_FIBERS "Enable fibers support" OFF TracyClient)
 set_option(TRACY_NO_CRASH_HANDLER "Disable crash handling" OFF TracyClient)
@@ -136,7 +136,7 @@ set_option(TRACY_LIBUNWIND_BACKTRACE "Use libunwind backtracing where supported"
 set_option(TRACY_SYMBOL_OFFLINE_RESOLVE "Instead of full runtime symbol resolution, only resolve the image path and offset to enable offline symbol resolution" OFF TracyClient)
 set_option(TRACY_LIBBACKTRACE_ELF_DYNLOAD_SUPPORT "Enable libbacktrace to support dynamically loaded elfs in symbol resolution resolution after the first symbol resolve operation" OFF TracyClient)
 set_option(TRACY_DEBUGINFOD "Enable debuginfod support" OFF TracyClient)
-set_option(TRACY_IGNORE_MEMORY_FAULTS "Ignore instrumentation errors from memory free events that do not have a matching allocation" OFF TracyClient)
+set_option(TRACY_IGNORE_MEMORY_FAULTS "Ignore instrumentation errors from memory free events that do not have a matching allocation, or from repeated allocations of the same address" OFF TracyClient)
 set_option(TRACY_OPENGL_AUTO_CALIBRATION "Periodically recalibrate OpenGL GPU/CPU clock drift (forces a CPU/GPU sync each time)" OFF TracyClient)
 
 # advanced
@@ -152,9 +152,6 @@ if(rocprofiler-sdk_FOUND)
 endif()
 
 # handle incompatible combinations
-if(TRACY_MANUAL_LIFETIME AND NOT TRACY_DELAYED_INIT)
-    message(FATAL_ERROR "TRACY_MANUAL_LIFETIME can not be activated with disabled TRACY_DELAYED_INIT")
-endif()
 if(TRACY_DISALLOW_HW_TIMER AND NOT TRACY_TIMER_FALLBACK)
     message(FATAL_ERROR "TRACY_DISALLOW_HW_TIMER can not be activated with disabled TRACY_TIMER_FALLBACK")
 endif()
@@ -182,7 +179,8 @@ set(tracy_includes
     ${TRACY_PUBLIC_DIR}/tracy/TracyMetal.hmm
     ${TRACY_PUBLIC_DIR}/tracy/TracyOpenCL.hpp
     ${TRACY_PUBLIC_DIR}/tracy/TracyOpenGL.hpp
-    ${TRACY_PUBLIC_DIR}/tracy/TracyVulkan.hpp)
+    ${TRACY_PUBLIC_DIR}/tracy/TracyVulkan.hpp
+    ${TRACY_PUBLIC_DIR}/tracy/TracyWebGPU.hpp)
 
 set(client_includes
     ${TRACY_PUBLIC_DIR}/client/tracy_concurrentqueue.h
@@ -213,6 +211,7 @@ set(common_includes
     ${TRACY_PUBLIC_DIR}/common/TracyAlign.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyAlloc.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyApi.h
+    ${TRACY_PUBLIC_DIR}/common/TracyAssert.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyColor.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyForceInline.hpp
     ${TRACY_PUBLIC_DIR}/common/TracyFormat.h
@@ -276,6 +275,11 @@ configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/Config.cmake.in
         "${CMAKE_CURRENT_BINARY_DIR}/TracyConfig.cmake"
         INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/TracyConfig.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
+write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/TracyConfigVersion.cmake"
+        COMPATIBILITY SameMinorVersion)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/TracyConfigVersion.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
 
 option(TRACY_CLIENT_PYTHON "Whether to build Tracy python client library" OFF)

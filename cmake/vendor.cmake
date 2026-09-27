@@ -181,6 +181,7 @@ if(VENDOR_GUI)
             "${CMAKE_CURRENT_LIST_DIR}/imgui-no-samplers.patch"
             "${CMAKE_CURRENT_LIST_DIR}/imgui-no-default-font.patch"
             "${CMAKE_CURRENT_LIST_DIR}/imgui-macos-clipboard.patch"
+            "${CMAKE_CURRENT_LIST_DIR}/imgui-phantom-column.patch"
     )
 
     set(IMGUI_SOURCES
@@ -197,7 +198,10 @@ if(VENDOR_GUI)
 
     add_library(TracyImGui STATIC EXCLUDE_FROM_ALL ${IMGUI_SOURCES})
     target_include_directories(TracyImGui PUBLIC ${ImGui_SOURCE_DIR})
-    target_link_libraries(TracyImGui PUBLIC TracyFreetype)
+    target_link_libraries(TracyImGui PUBLIC
+        TracyFreetype
+        ${CMAKE_DL_LIBS}
+    )
     target_compile_definitions(TracyImGui PRIVATE "IMGUI_ENABLE_FREETYPE")
     target_compile_definitions(TracyImGui PUBLIC "IMGUI_USE_WCHAR32")
     #target_compile_definitions(TracyImGui PUBLIC "IMGUI_DISABLE_OBSOLETE_FUNCTIONS")
@@ -229,6 +233,8 @@ if(VENDOR_GUI)
             GITHUB_REPOSITORY btzy/nativefiledialog-extended
             GIT_TAG 3cd252a8f7ca32419b1ca235c2990ba6a0ecba7c
             EXCLUDE_FROM_ALL TRUE
+            PATCHES
+                "${CMAKE_CURRENT_LIST_DIR}/nfd-xdg-foreign-v2.patch"
             OPTIONS
                 "BUILD_SHARED_LIBS OFF"
                 "NFD_PORTAL ${NFD_PORTAL}"

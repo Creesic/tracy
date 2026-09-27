@@ -1,4 +1,4 @@
-project('tracy', ['cpp'], version: '0', meson_version: '>=1.3.0', default_options : ['cpp_std=c++11'])
+project('tracy', ['cpp'], version: run_command('sh', files('extra/tracy-version.sh'), 'public/common/TracyVersion.hpp', check: true).stdout().strip(), meson_version: '>=1.3.0', default_options : ['cpp_std=c++11'])
 
 # internal compiler flags
 tracy_compile_args = []
@@ -61,6 +61,10 @@ if get_option('no_sampling')
   tracy_common_args += ['-DTRACY_NO_SAMPLING']
 endif
 
+if get_option('no_wait_stacks')
+  tracy_common_args += ['-DTRACY_NO_WAIT_STACKS']
+endif
+
 if get_option('no_verify')
   tracy_common_args += ['-DTRACY_NO_VERIFY']
 endif
@@ -79,10 +83,6 @@ endif
 
 if get_option('patchable_nopsleds')
   tracy_common_args += ['-DTRACY_PATCHABLE_NOPSLEDS']
-endif
-
-if get_option('delayed_init')
-  tracy_common_args += ['-DTRACY_DELAYED_INIT']
 endif
 
 if get_option('manual_lifetime')
@@ -158,7 +158,8 @@ includes = [
     'public/tracy/TracyLua.hpp',
     'public/tracy/TracyOpenCL.hpp',
     'public/tracy/TracyOpenGL.hpp',
-    'public/tracy/TracyVulkan.hpp'
+    'public/tracy/TracyVulkan.hpp',
+    'public/tracy/TracyWebGPU.hpp'
 ]
 
 client_includes = [
@@ -190,6 +191,7 @@ common_includes = [
     'public/common/TracyAlign.hpp',
     'public/common/TracyAlloc.hpp',
     'public/common/TracyApi.h',
+    'public/common/TracyAssert.hpp',
     'public/common/TracyColor.hpp',
     'public/common/TracyForceInline.hpp',
     'public/common/TracyFormat.h',

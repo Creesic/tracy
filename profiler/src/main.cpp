@@ -373,6 +373,8 @@ int main( int argc, char** argv )
     backend.Show();
     backend.Run();
 
+    HttpRequestAbort();
+
     if( loadThread.joinable() ) loadThread.join();
     if( updateThread.joinable() ) updateThread.join();
     if( updateNotesThread.joinable() ) updateNotesThread.join();
@@ -1280,7 +1282,15 @@ static void DrawContents()
     if( ImGui::BeginPopupModal( "File selector is not available", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
     {
         ImGui::TextUnformatted( "File selector cannot be displayed." );
-        ImGui::TextUnformatted( "Check nfd library implementation for details." );
+        if( const auto err = tracy::Fileselector::GetError() )
+        {
+            ImGui::Separator();
+            ImGui::TextUnformatted( err );
+        }
+        else
+        {
+            ImGui::TextUnformatted( "Check nfd library implementation for details." );
+        }
         ImGui::Separator();
         if( ImGui::Button( "Ok" ) ) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
