@@ -1249,6 +1249,104 @@ nlohmann::json HandleZonesInstances( const nlohmann::json& p )
     return Ok( { { "instances", std::move( arr ) }, { "total", z.zones.size() } } );
 }
 
+nlohmann::json HandleZonesRuntimeStats( const nlohmann::json& p )
+{
+    auto* w = RequireWorker();
+    WaitSourceZones( *w );
+    const int srcloc = p.value( "src_loc", -1 );
+    if( srcloc < -1 ) return Err( "invalid src_loc" );
+    const int64_t t0 = p.value( "start_ns", w->GetFirstTime() );
+    const int64_t t1 = p.value( "end_ns", w->GetLastTime() );
+    if( t1 <= t0 ) return Err( "end_ns must be greater than start_ns" );
+    const uint64_t tid = p.value( "tid", 0ull );
+    if( tid != 0 && !w->GetThreadData( tid ) ) return Err( "thread tid not found" );
+    const uint16_t thread = tid == 0 ? 0 : w->CompressThread( tid );
+    const int top = std::min( p.value( "top_k", 50 ), 500 );
+    const std::string sortBy = p.value( "sort_by", "overlap" );
+
+    struct RuntimeAgg
+    {
+        std::string name;
+        std::string text;
+        int64_t count = 0;
+        int64_t overlapNs = 0;
+        int64_t minNs = std::numeric_limits<int64_t>::max();
+        int64_t maxNs = 0;
+    };
+
+    const auto& z = w->GetZonesForSourceLocation( int16_t( srcloc ) );
+    std::unordered_map<std::string, RuntimeAgg> groups;
+    auto lock = w->ObtainLockForMainThread();
+    for( const auto& ztd : z.zones )
+    {
+        if( tid != 0 && ztd.Thread() != thread ) continue;
+        const auto* ze = ztd.Zone();
+        if( !ze ) continue;
+        const int64_t start = ze->Start();
+        if( start >= t1 ) break;
+        const int64_t end = ZoneCpuEndForMcp( *ze );
+        const int64_t overlap = std::min( end, t1 ) - std::max( start, t0 );
+        if( overlap <= 0 ) continue;
+
+        const char* runtimeName = w->GetZoneName( *ze );
+        const char* runtimeText = "";
+        if( w->HasZoneExtra( *ze ) )
+        {
+            const auto& extra = w->GetZoneExtra( *ze );
+            if( extra.text.Active() ) runtimeText = w->GetString( extra.text );
+        }
+        std::string key = runtimeName;
+        key.push_back( '\x1f' );
+        key += runtimeText;
+        auto& agg = groups[key];
+        if( agg.count == 0 )
+        {
+            agg.name = runtimeName;
+            agg.text = runtimeText;
+        }
+        agg.count++;
+        agg.overlapNs += overlap;
+        agg.minNs = std::min( agg.minNs, overlap );
+        agg.maxNs = std::max( agg.maxNs, overlap );
+    }
+
+    std::vector<RuntimeAgg> rows;
+    rows.reserve( groups.size() );
+    for( auto& kv : groups ) rows.emplace_back( std::move( kv.second ) );
+    if( sortBy == "count" )
+    {
+        std::sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) { return a.count > b.count; } );
+    }
+    else
+    {
+        std::sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) { return a.overlapNs > b.overlapNs; } );
+    }
+
+    nlohmann::json arr = nlohmann::json::array();
+    for( int i = 0; i < top && i < (int)rows.size(); ++i )
+    {
+        const auto& row = rows[i];
+        arr.push_back( {
+            { "runtimeName", row.name },
+            { "text", row.text.empty() ? nlohmann::json( nullptr ) : nlohmann::json( row.text ) },
+            { "count", row.count },
+            { "overlapNs", row.overlapNs },
+            { "minNs", row.minNs },
+            { "maxNs", row.maxNs },
+            { "meanNs", row.count ? row.overlapNs / row.count : 0 },
+        } );
+    }
+    return Ok( {
+        { "srcLoc", srcloc },
+        { "startNs", t0 },
+        { "endNs", t1 },
+        { "tid", tid },
+        { "sortBy", sortBy },
+        { "groups", std::move( arr ) },
+        { "groupCount", rows.size() },
+    } );
+}
+
 nlohmann::json CallstackToJson( tracy::Worker& w, uint32_t csIdx )
 {
     nlohmann::json arr = nlohmann::json::array();
@@ -1260,8 +1358,11 @@ nlohmann::json CallstackToJson( tracy::Worker& w, uint32_t csIdx )
         if( !fr || !fr->data ) continue;
         const auto* d = fr->data.get();
         arr.push_back( {
+            { "address", w.GetCanonicalPointer( cs[i] ) },
+            { "symAddr", d->symAddr },
             { "name", w.GetString( d->name ) },
             { "file", w.GetString( d->file ) },
+            { "image", w.GetString( fr->imageName ) },
             { "line", d->line },
         } );
     }
@@ -1311,6 +1412,300 @@ nlohmann::json HandleThreadsList( const nlohmann::json& )
         } );
     }
     return Ok( { { "threads", std::move( arr ) } } );
+}
+
+nlohmann::json HandleThreadContextSwitchStats( const nlohmann::json& p )
+{
+    auto* w = RequireWorker();
+    const uint64_t tid = p.value( "tid", 0ull );
+    const auto* ctx = w->GetContextSwitchData( tid );
+    if( !ctx ) return Err( "thread has no context switch data" );
+    const int64_t t0 = p.value( "start_ns", w->GetFirstTime() );
+    const int64_t t1 = p.value( "end_ns", w->GetLastTime() );
+    if( t1 <= t0 ) return Err( "end_ns must be greater than start_ns" );
+    const size_t top = std::min<size_t>( p.value( "top_k", 20 ), 500 );
+
+    struct WaitAgg
+    {
+        int reason;
+        int state;
+        int64_t count = 0;
+        int64_t time = 0;
+        int64_t max = 0;
+    };
+    struct WaitEvent
+    {
+        int64_t start;
+        int64_t end;
+        int reason;
+        int state;
+    };
+
+    std::unordered_map<int, WaitAgg> waitGroups;
+    std::vector<WaitEvent> waits;
+    int64_t running = 0;
+    int64_t waiting = 0;
+    int64_t runningRegions = 0;
+
+    const auto& v = ctx->v;
+    for( size_t i = 0; i < v.size(); ++i )
+    {
+        const auto& ev = v[i];
+        const int64_t runStart = std::max( t0, ev.Start() );
+        const int64_t runEnd = std::min( t1, ev.EndOrStart() );
+        if( runEnd > runStart )
+        {
+            running += runEnd - runStart;
+            runningRegions++;
+        }
+        if( i + 1 == v.size() ) continue;
+
+        const int64_t waitStart = std::max( t0, ev.EndOrStart() );
+        const int64_t waitEnd = std::min( t1, v[i + 1].Start() );
+        if( waitEnd <= waitStart ) continue;
+        const int reason = int( ev.Reason() );
+        const int state = int( ev.State() );
+        const int key = ( state << 8 ) | ( reason & 0xff );
+        auto [it, inserted] = waitGroups.try_emplace( key, WaitAgg { reason, state } );
+        auto& agg = it->second;
+        const int64_t duration = waitEnd - waitStart;
+        agg.count++;
+        agg.time += duration;
+        agg.max = std::max( agg.max, duration );
+        waiting += duration;
+        waits.push_back( WaitEvent { waitStart, waitEnd, reason, state } );
+    }
+
+    std::vector<WaitAgg> groups;
+    groups.reserve( waitGroups.size() );
+    for( const auto& [_, agg] : waitGroups ) groups.push_back( agg );
+    std::sort( groups.begin(), groups.end(), []( const auto& a, const auto& b ) { return a.time > b.time; } );
+    std::sort( waits.begin(), waits.end(), []( const auto& a, const auto& b ) { return a.end - a.start > b.end - b.start; } );
+
+    nlohmann::json groupJson = nlohmann::json::array();
+    for( const auto& group : groups )
+    {
+        groupJson.push_back( {
+            { "reason", group.reason },
+            { "state", group.state },
+            { "count", group.count },
+            { "waitNs", group.time },
+            { "maxWaitNs", group.max },
+        } );
+    }
+    nlohmann::json waitJson = nlohmann::json::array();
+    for( size_t i = 0; i < std::min( top, waits.size() ); ++i )
+    {
+        const auto& wait = waits[i];
+        waitJson.push_back( {
+            { "startNs", wait.start },
+            { "endNs", wait.end },
+            { "durationNs", wait.end - wait.start },
+            { "reason", wait.reason },
+            { "state", wait.state },
+        } );
+    }
+
+    const int64_t span = t1 - t0;
+    return Ok( {
+        { "tid", tid },
+        { "startNs", t0 },
+        { "endNs", t1 },
+        { "runningNs", running },
+        { "waitingNs", waiting },
+        { "uncoveredNs", std::max<int64_t>( 0, span - running - waiting ) },
+        { "runningRegions", runningRegions },
+        { "waitEvents", waits.size() },
+        { "waitGroups", std::move( groupJson ) },
+        { "longestWaits", std::move( waitJson ) },
+    } );
+}
+
+nlohmann::json HandleThreadSampleStats( const nlohmann::json& p )
+{
+    auto* w = RequireWorker();
+    const uint64_t tid = p.value( "tid", 0ull );
+    const auto* td = w->GetThreadData( tid );
+    if( !td ) return Err( "thread tid not found" );
+    const int64_t t0 = p.value( "start_ns", w->GetFirstTime() );
+    const int64_t t1 = p.value( "end_ns", w->GetLastTime() );
+    if( t1 <= t0 ) return Err( "end_ns must be greater than start_ns" );
+    const size_t top = std::min<size_t>( p.value( "top_k", 30 ), 500 );
+    const size_t stackTop = std::min<size_t>( p.value( "stack_top_k", 0 ), 500 );
+
+    std::unordered_set<int64_t> contextSwitchSamples;
+    for( const auto& sample : td->ctxSwitchSamples )
+    {
+        const int64_t time = sample.time.Val();
+        if( time >= t0 && time < t1 ) contextSwitchSamples.insert( time );
+    }
+
+    struct SampleAgg
+    {
+        uint64_t address;
+        std::string name;
+        std::string file;
+        std::string image;
+        uint32_t line;
+        uint64_t count = 0;
+    };
+    std::unordered_map<uint64_t, SampleAgg> groups;
+    std::unordered_map<uint32_t, uint64_t> stackGroups;
+    uint64_t total = 0;
+    uint64_t excluded = 0;
+    for( const auto& sample : td->samples )
+    {
+        const int64_t time = sample.time.Val();
+        if( time < t0 ) continue;
+        if( time >= t1 ) break;
+        if( contextSwitchSamples.find( time ) != contextSwitchSamples.end() )
+        {
+            excluded++;
+            continue;
+        }
+        const auto& callstack = w->GetCallstack( sample.callstack.Val() );
+        if( callstack.empty() ) continue;
+        const auto ip = callstack[0];
+        const auto* frame = w->GetCallstackFrame( ip );
+        uint64_t address = w->GetCanonicalPointer( ip );
+        std::string name;
+        std::string file;
+        std::string image;
+        uint32_t line = 0;
+        if( frame && frame->size != 0 )
+        {
+            const auto& data = frame->data[0];
+            if( data.symAddr != 0 ) address = data.symAddr;
+            name = w->GetString( data.name );
+            file = w->GetString( data.file );
+            image = w->GetString( frame->imageName );
+            line = data.line;
+        }
+        auto [it, inserted] = groups.try_emplace( address, SampleAgg { address, std::move( name ), std::move( file ), std::move( image ), line } );
+        it->second.count++;
+        if( stackTop != 0 ) stackGroups[sample.callstack.Val()]++;
+        total++;
+    }
+
+    std::vector<SampleAgg> rows;
+    rows.reserve( groups.size() );
+    for( auto& [_, row] : groups ) rows.push_back( std::move( row ) );
+    std::sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) { return a.count > b.count; } );
+    nlohmann::json arr = nlohmann::json::array();
+    for( size_t i = 0; i < std::min( top, rows.size() ); ++i )
+    {
+        const auto& row = rows[i];
+        arr.push_back( {
+            { "address", row.address },
+            { "name", row.name },
+            { "file", row.file },
+            { "image", row.image },
+            { "line", row.line },
+            { "samples", row.count },
+            { "sampledNs", row.count * uint64_t( w->GetSamplingPeriod() ) },
+        } );
+    }
+
+    std::vector<std::pair<uint32_t, uint64_t>> stackRows( stackGroups.begin(), stackGroups.end() );
+    std::sort( stackRows.begin(), stackRows.end(), []( const auto& a, const auto& b ) { return a.second > b.second; } );
+    nlohmann::json stacks = nlohmann::json::array();
+    for( size_t i = 0; i < std::min( stackTop, stackRows.size() ); ++i )
+    {
+        const auto& [callstack, count] = stackRows[i];
+        stacks.push_back( {
+            { "callstack", callstack },
+            { "samples", count },
+            { "sampledNs", count * uint64_t( w->GetSamplingPeriod() ) },
+            { "frames", CallstackToJson( *w, callstack ) },
+        } );
+    }
+    return Ok( {
+        { "tid", tid },
+        { "startNs", t0 },
+        { "endNs", t1 },
+        { "samplingPeriodNs", w->GetSamplingPeriod() },
+        { "samples", total },
+        { "excludedContextSwitchSamples", excluded },
+        { "symbols", std::move( arr ) },
+        { "stacks", std::move( stacks ) },
+    } );
+}
+
+nlohmann::json HandleThreadWaitStackStats( const nlohmann::json& p )
+{
+    auto* w = RequireWorker();
+    const uint64_t tid = p.value( "tid", 0ull );
+    const auto* td = w->GetThreadData( tid );
+    const auto* ctx = w->GetContextSwitchData( tid );
+    if( !td || !ctx ) return Err( "thread has no wait stack data" );
+    const int64_t t0 = p.value( "start_ns", w->GetFirstTime() );
+    const int64_t t1 = p.value( "end_ns", w->GetLastTime() );
+    if( t1 <= t0 ) return Err( "end_ns must be greater than start_ns" );
+    const int reasonFilter = p.value( "reason", -1000 );
+    const int stateFilter = p.value( "state", -1000 );
+    const size_t top = std::min<size_t>( p.value( "top_k", 30 ), 500 );
+
+    struct StackAgg
+    {
+        uint32_t callstack;
+        int reason;
+        int state;
+        uint64_t count = 0;
+        int64_t wait = 0;
+        int64_t maxWait = 0;
+    };
+    std::unordered_map<uint64_t, StackAgg> groups;
+    std::unordered_set<int64_t> accountedWaits;
+    uint64_t total = 0;
+    for( const auto& sample : td->ctxSwitchSamples )
+    {
+        const int64_t time = sample.time.Val();
+        if( time < t0 ) continue;
+        if( time >= t1 ) break;
+        const auto it = std::lower_bound( ctx->v.begin(), ctx->v.end(), time, []( const auto& ev, int64_t value ) { return ev.Start() < value; } );
+        if( it == ctx->v.end() || it->Start() != time || it == ctx->v.begin() ) continue;
+        const auto& prev = *( it - 1 );
+        const int reason = int( prev.Reason() );
+        const int state = int( prev.State() );
+        if( reasonFilter != -1000 && reason != reasonFilter ) continue;
+        if( stateFilter != -1000 && state != stateFilter ) continue;
+        const uint32_t callstack = sample.callstack.Val();
+        const uint64_t key = ( uint64_t( callstack ) << 16 ) | ( uint64_t( state & 0xff ) << 8 ) | uint64_t( reason & 0xff );
+        auto [agg, inserted] = groups.try_emplace( key, StackAgg { callstack, reason, state } );
+        const int64_t wait = accountedWaits.insert( time ).second
+            ? std::max<int64_t>( 0, std::min( t1, it->Start() ) - std::max( t0, prev.EndOrStart() ) )
+            : 0;
+        agg->second.count++;
+        agg->second.wait += wait;
+        agg->second.maxWait = std::max( agg->second.maxWait, wait );
+        total++;
+    }
+
+    std::vector<StackAgg> rows;
+    rows.reserve( groups.size() );
+    for( const auto& [_, row] : groups ) rows.push_back( row );
+    std::sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) { return a.wait > b.wait; } );
+    nlohmann::json arr = nlohmann::json::array();
+    for( size_t i = 0; i < std::min( top, rows.size() ); ++i )
+    {
+        const auto& row = rows[i];
+        arr.push_back( {
+            { "callstack", row.callstack },
+            { "reason", row.reason },
+            { "state", row.state },
+            { "samples", row.count },
+            { "waitNs", row.wait },
+            { "maxWaitNs", row.maxWait },
+            { "frames", CallstackToJson( *w, row.callstack ) },
+        } );
+    }
+    return Ok( {
+        { "tid", tid },
+        { "startNs", t0 },
+        { "endNs", t1 },
+        { "samples", total },
+        { "stacks", std::move( arr ) },
+    } );
 }
 
 nlohmann::json HandleThreadsTimelineSummary( const nlohmann::json& p )
@@ -2003,9 +2398,13 @@ static nlohmann::json DispatchImpl( const std::string& method, const nlohmann::j
         if( method == "zones.search" ) return HandleZonesSearch( params );
         if( method == "zones.stats" ) return HandleZonesStats( params );
         if( method == "zones.instances" ) return HandleZonesInstances( params );
+        if( method == "zones.runtime_stats" ) return HandleZonesRuntimeStats( params );
         if( method == "zones.callstack" ) return HandleZonesCallstack( params );
         if( method == "zones.compare_frames" ) return HandleZonesCompareFrames( params );
         if( method == "threads.list" ) return HandleThreadsList( params );
+        if( method == "threads.context_switch_stats" ) return HandleThreadContextSwitchStats( params );
+        if( method == "threads.sample_stats" ) return HandleThreadSampleStats( params );
+        if( method == "threads.wait_stack_stats" ) return HandleThreadWaitStackStats( params );
         if( method == "threads.timeline_summary" ) return HandleThreadsTimelineSummary( params );
         if( method == "threads.gaps" ) return HandleThreadsGaps( params );
         if( method == "threads.handoff" ) return HandleThreadsHandoff( params );
