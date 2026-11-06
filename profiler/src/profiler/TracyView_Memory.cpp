@@ -172,6 +172,8 @@ std::vector<MemoryPage> View::GetMemoryPages() const
 
 void View::DrawMemory()
 {
+    if( s_config.achievements && !m_worker.GetMemoryNamed( m_memInfo.pool ).data.empty() ) Achieve( "trackMemory" );
+
     const auto scale = GetScale();
     ImGui::SetNextWindowSize( ImVec2( 1100 * scale, 500 * scale ), ImGuiCond_FirstUseEver );
     m_memoryConstraint.Constrain();
@@ -189,6 +191,7 @@ void View::DrawMemory()
             {
                 if( ImGui::Selectable( v.first == 0 ? "Default allocator" : m_worker.GetString( v.first ) ) )
                 {
+                    if( s_config.achievements && v.first != 0 ) Achieve( "memoryPools" );
                     m_memInfo.pool = v.first;
                     m_memInfo.showAllocList = false;
                 }
@@ -331,6 +334,7 @@ void View::DrawMemory()
     ImGui::Separator();
     if( ImGui::TreeNode( ICON_FA_HEART_PULSE " Active allocations" ) )
     {
+        if( s_config.achievements ) Achieve( "huntLeaks" );
         uint64_t total = 0;
         std::vector<const MemEvent*> items;
         items.reserve( mem.active.size() );
@@ -395,7 +399,7 @@ void View::DrawMemory()
         auto pages = GetMemoryPages();
         const size_t lines = pages.size();
 
-        ImGui::BeginChild( "##memMap", ImVec2( PageSize + 2, lines + 2 ), false );
+        ImGui::BeginChild( "##memMap", ImVec2( PageSize + 2, lines + 2 ), ImGuiChildFlags_None );
         auto draw = ImGui::GetWindowDrawList();
         const auto wpos = ImGui::GetCursorScreenPos() + ImVec2( 1, 1 );
         const auto dpos = wpos + ImVec2( 0.5f, 0.5f );
@@ -463,6 +467,7 @@ void View::DrawMemory()
         auto tree = GetCallstackFrameTreeBottomUp( mem );
         if( !tree.empty() )
         {
+            if( s_config.achievements ) Achieve( "allocStacks" );
             int idx = 0;
             DrawFrameTreeLevel( tree, idx );
         }
@@ -501,6 +506,7 @@ void View::DrawMemory()
         auto tree = GetCallstackFrameTreeTopDown( mem );
         if( !tree.empty() )
         {
+            if( s_config.achievements ) Achieve( "allocStacks" );
             int idx = 0;
             DrawFrameTreeLevel( tree, idx );
         }

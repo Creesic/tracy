@@ -57,6 +57,8 @@ void View::HandleTimelineMouse( int64_t timespan, const ImVec2& wpos, float w )
             const auto s = std::min( m_highlightZoom.start, m_highlightZoom.end );
             const auto e = std::max( m_highlightZoom.start, m_highlightZoom.end );
 
+            if( s_config.achievements ) Achieve( "navigate" );
+
             // ZoomToRange disables m_highlightZoom.active
             if( io.KeyCtrl )
             {
@@ -227,6 +229,7 @@ void View::HandleTimelineKeyboard( int64_t timespan, const ImVec2& wpos, float w
 
     if( anyDeltaApplied )
     {
+        if( s_config.achievements ) Achieve( "navigate" );
         if( m_viewMode == ViewMode::LastFrames ) m_viewMode = ViewMode::LastRange;
         if( nextTimelineRangeStart > nextTimelineRangeEnd ) return;
 
@@ -350,7 +353,7 @@ void View::DrawTimeline()
     draw->AddLineH( winpos.x, winpos.x + ImGui::GetContentRegionAvail().x + 1, yMin - 1, 0x0FFFFFFF );
 
     ImGui::SetNextWindowContentSize( ImVec2( 0, m_tc.GetHeight() ) );
-    ImGui::BeginChild( "##zoneWin", ImVec2( ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y ), false, ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
+    ImGui::BeginChild( "##zoneWin", ImVec2( ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y ), ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
 
     if( m_yDelta != 0 )
     {

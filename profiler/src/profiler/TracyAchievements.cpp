@@ -126,7 +126,15 @@ void AchievementsMgr::Achieve( const char* id )
         {
             (*c)->unlockTime = t;
             auto cit = m_map.find( (*c)->id );
-            if( cit->second.category->unlockTime == 0 ) cit->second.category->unlockTime = t;
+            assert( cit != m_map.end() );
+            auto& cat = *cit->second.category;
+            if( cat.unlockTime == 0 ) cat.unlockTime = t;
+            auto items = cat.items;
+            while( *items )
+            {
+                if( (*items)->unlockTime == 0 ) (*items)->unlockTime = cat.unlockTime;
+                items++;
+            }
             c++;
         }
     }
@@ -163,6 +171,7 @@ bool AchievementsMgr::NeedsAttention() const
     for( auto& v : m_map )
     {
         auto& it = v.second.item;
+        if( it->visible && !it->visible() ) continue;
         if( it->unlockTime > 0 && !it->hideNew ) return true;
         if( it->doneTime > 0 && !it->hideCompleted ) return true;
     }
@@ -181,6 +190,7 @@ bool AchievementsMgr::CategoryNeedsAttention( const char* id ) const
                 if( v.second.category == (*c) )
                 {
                     auto& it = v.second.item;
+                    if( it->visible && !it->visible() ) continue;
                     if( it->unlockTime > 0 && !it->hideNew ) return true;
                     if( it->doneTime > 0 && !it->hideCompleted ) return true;
                 }

@@ -1,5 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <algorithm>
+#include <limits>
 #include <unordered_map>
 
 #ifdef _MSC_VER
@@ -320,6 +322,42 @@ PYBIND11_MODULE( TracyServerBindings, m )
         }
         return result;
     } ) )
+
+        .def( "get_thread_zone_stats", locked( +[]( const Worker& w, uint64_t threadId ) {
+            // Same shape and name handling as get_all_zone_stats(), counting only zones recorded on one thread
+        py::dict result;
+#ifndef TRACY_NO_STATISTICS
+        std::unordered_map<std::string, int16_t> chosen;
+        for( const auto& kv : w.GetSourceLocationZones() )
+        {
+            if( kv.second.zones.size() == 0 ) continue;
+            chosen[w.GetZoneName( w.GetSourceLocation( kv.first ) )] = kv.first;
+        }
+        for( const auto& kv : w.GetSourceLocationZones() )
+        {
+            const std::string name = w.GetZoneName( w.GetSourceLocation( kv.first ) );
+            const auto it = chosen.find( name );
+            if( it == chosen.end() || it->second != kv.first ) continue;
+            int64_t min = INT64_MAX, max = INT64_MIN, total = 0;
+            double sumSq = 0;
+            size_t count = 0;
+            for( const auto& ztd : kv.second.zones )
+            {
+                if( w.DecompressThread( ztd.Thread() ) != threadId ) continue;
+                const auto* z = ztd.Zone();
+                if( !z || !z->IsEndValid() ) continue;
+                const int64_t dur = z->End() - z->Start();
+                total += dur;
+                sumSq += (double)dur * dur;
+                count++;
+                if( dur < min ) min = dur;
+                if( dur > max ) max = dur;
+            }
+            if( count ) result[name.c_str()] = ZoneStats{ min, max, total, sumSq, count, (double)total / count };
+        }
+#endif
+        return result;
+    } ), "thread_id"_a )
 
         // --- Per-occurrence zone data (for temporal correlation / distribution) ---
         .def( "get_zone_durations", locked( +[]( const Worker& w, const std::string& name, size_t maxSamples ) {
@@ -754,25 +792,10 @@ PYBIND11_MODULE( TracyServerBindings, m )
                 name = w.GetZoneName( w.GetSourceLocation( lm->srcloc ) );
             int64_t totalWaitNs = 0;
             uint64_t contentionCount = 0;
-            std::unordered_map<uint8_t, int64_t> pendingWait;
-            for( const auto& evPtr : lm->timeline )
+            for( const auto& ti : lm->threads )
             {
-                const auto* ev = evPtr.ptr.get();
-                if( !ev ) continue;
-                if( ev->type == LockEvent::Type::Wait || ev->type == LockEvent::Type::WaitShared )
-                {
-                    pendingWait[ev->thread] = ev->Time();
-                }
-                else if( ev->type == LockEvent::Type::Obtain || ev->type == LockEvent::Type::ObtainShared )
-                {
-                    auto it = pendingWait.find( ev->thread );
-                    if( it != pendingWait.end() )
-                    {
-                        totalWaitNs += ev->Time() - it->second;
-                        contentionCount++;
-                        pendingWait.erase( it );
-                    }
-                }
+                totalWaitNs += ti.waitTotal;
+                contentionCount += ti.waitCount;
             }
             if( contentionCount == 0 ) continue;
             py::dict d;
@@ -780,7 +803,10 @@ PYBIND11_MODULE( TracyServerBindings, m )
             d["total_wait_ns"] = totalWaitNs;
             d["avg_wait_ns"] = (double)totalWaitNs / (double)contentionCount;
             d["contention_count"] = contentionCount;
-            d["threads"] = lm->threadList;
+            std::vector<uint64_t> threads;
+            threads.reserve( lm->threads.size() );
+            for( const auto& ti : lm->threads ) threads.push_back( ti.thread );
+            d["threads"] = threads;
             result.append( d );
         }
         return result;
@@ -1028,6 +1054,46 @@ PYBIND11_MODULE( TracyServerBindings, m )
         return result;
     } ) )
 
+        .def( "get_plot_samples", locked( +[]( const Worker& w, const std::string& name, int64_t startNs, int64_t endNs, size_t maxSamples ) {
+        std::vector<std::pair<int64_t, double>> result;
+        for( const auto* pd : w.GetPlots() )
+        {
+            if( !pd || w.GetString( pd->name ) != name ) continue;
+            auto first = std::lower_bound( pd->data.begin(), pd->data.end(), startNs,
+                []( const PlotItem& item, int64_t t ) { return item.time.Val() < t; } );
+            auto last = std::lower_bound( first, pd->data.end(), endNs,
+                []( const PlotItem& item, int64_t t ) { return item.time.Val() < t; } );
+            const size_t n = last - first;
+            const size_t step = maxSamples && n > maxSamples ? ( n + maxSamples - 1 ) / maxSamples : 1;
+            for( auto it = first; it < last; it += std::min<size_t>( step, last - it ) )
+                result.emplace_back( it->time.Val(), it->val );
+            break;
+        }
+        return result;
+    } ), py::arg( "name" ), py::arg( "start_ns" ) = 0, py::arg( "end_ns" ) = std::numeric_limits<int64_t>::max(), py::arg( "max_samples" ) = 100000 )
+
+        .def( "get_plot_window_stats", locked( +[]( const Worker& w, const std::string& name, int64_t startNs, int64_t endNs ) {
+        PlotSummary result{ name, 0, 0, 0, 0, 0, "User" };
+        static const char* plotTypeStr[] = { "User", "Memory", "SysTime", "Power" };
+        for( const auto* pd : w.GetPlots() )
+        {
+            if( !pd || w.GetString( pd->name ) != name ) continue;
+            result.type = (uint8_t)pd->type < 4 ? plotTypeStr[(uint8_t)pd->type] : "Unknown";
+            auto first = std::lower_bound( pd->data.begin(), pd->data.end(), startNs,
+                []( const PlotItem& item, int64_t t ) { return item.time.Val() < t; } );
+            for( auto it = first; it != pd->data.end() && it->time.Val() < endNs; ++it )
+            {
+                if( result.count == 0 || it->val < result.min ) result.min = it->val;
+                if( result.count == 0 || it->val > result.max ) result.max = it->val;
+                result.sum += it->val;
+                result.count++;
+            }
+            result.avg = result.count ? result.sum / result.count : 0.0;
+            break;
+        }
+        return result;
+    } ), py::arg( "name" ), py::arg( "start_ns" ) = 0, py::arg( "end_ns" ) = std::numeric_limits<int64_t>::max() )
+
         // --- Memory pools ---
         .def( "get_memory_pools", locked( +[]( const Worker& w ) {
         std::vector<MemPoolSummary> result;
@@ -1054,13 +1120,16 @@ PYBIND11_MODULE( TracyServerBindings, m )
             else
                 name = w.GetZoneName( w.GetSourceLocation( lm->srcloc ) );
             const char* typeStr = lm->type == LockType::Lockable ? "Lockable" : "SharedLockable";
+            std::vector<uint64_t> threads;
+            threads.reserve( lm->threads.size() );
+            for( const auto& ti : lm->threads ) threads.push_back( ti.thread );
             result.push_back( LockSummary{
                 name,
                 lm->isContended,
                 std::string( typeStr ),
                 lm->timeAnnounce,
                 lm->timeTerminate,
-                lm->threadList } );
+                std::move( threads ) } );
         }
         return result;
     } ) )
@@ -1109,7 +1178,36 @@ PYBIND11_MODULE( TracyServerBindings, m )
         // Plain relaxed atomic like IsConnected() above — no locked()
         // needed. True once post-load zone/symbol stats have finished
         // building; get_all_zone_stats() et al. can be empty until then.
-        .def( "is_background_done", &Worker::IsBackgroundDone );
+        .def( "is_background_done", &Worker::IsBackgroundDone )
+        // Raw compressed bytes read off the socket post-handshake.
+        .def( "get_data_transferred", &Worker::GetDataTransferred )
+        // Raw HandshakeStatus byte (TracyProtocol.hpp): 0=none, 1=Welcome,
+        // 2=ProtocolMismatch, 3=NotAvailable, 4=Dropped.
+        .def( "get_handshake_status", &Worker::GetHandshakeStatus )
+        // Raw Failure byte (Worker::Failure, TracyWorker.hpp): 0=None,
+        // ZoneStack, ZoneDoubleEnd, ZoneText, ZoneValue, ZoneColor, ZoneName,
+        // MemFree, MemAllocTwice, FrameEnd, FrameImageIndex, FrameImageTwice,
+        // FiberLeave, SourceLocationOverflow, LockThreadOverflow, in order.
+        .def( "get_failure_type", []( const Worker& w ) -> int { return (int)w.GetFailureType(); } )
+        // GetFailureData() as a dict: thread_id, thread_name, zone_name,
+        // function, file, line. Empty if get_failure_type() is zero.
+        .def( "get_failure_data", []( Worker& w ) {
+            py::dict d;
+            if( w.GetFailureType() == Worker::Failure::None ) return d;
+            const auto& fd = w.GetFailureData();
+            d["thread_id"] = fd.thread;
+            d["thread_name"] = w.GetThreadName( fd.thread );
+            if( fd.srcloc != 0 )
+            {
+                const auto& srcloc = w.GetSourceLocation( fd.srcloc );
+                d["zone_name"] = w.GetZoneName( srcloc );
+                d["function"] = w.GetString( srcloc.function );
+                d["file"] = w.GetString( srcloc.file );
+                d["line"] = srcloc.line;
+            }
+            if( !fd.message.empty() ) d["message"] = fd.message;
+            return d;
+        } );
 
     // -------------------------------------------------------------------------
     // FileRead

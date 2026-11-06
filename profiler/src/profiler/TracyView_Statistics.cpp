@@ -66,13 +66,19 @@ void View::DrawStatistics()
         {
             ImGui::Spacing();
             ImGui::SameLine();
-            ImGui::RadioButton( ICON_FA_EYE_DROPPER " Sampling", &m_statMode, 1 );
+            if( ImGui::RadioButton( ICON_FA_EYE_DROPPER " Sampling", &m_statMode, 1 ) )
+            {
+                if( s_config.achievements ) Achieve( "samplingStats" );
+            }
         }
         else if( m_worker.GetSymbolsCount() > 0 )
         {
             ImGui::Spacing();
             ImGui::SameLine();
-            ImGui::RadioButton( ICON_FA_PUZZLE_PIECE " Symbols", &m_statMode, 1 );
+            if( ImGui::RadioButton( ICON_FA_PUZZLE_PIECE " Symbols", &m_statMode, 1 ) )
+            {
+                if( s_config.achievements ) Achieve( "samplingStats" );
+            }
         }
     }
     if( m_worker.GetGpuZoneCount() > 0 )
@@ -80,7 +86,10 @@ void View::DrawStatistics()
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
-        ImGui::RadioButton( ICON_FA_EYE " GPU", &m_statMode, 2 );
+        if( ImGui::RadioButton( ICON_FA_DISPLAY " GPU", &m_statMode, 2 ) )
+        {
+            if( s_config.achievements ) Achieve( "gpuStats" );
+        }
     }
     ImGui::SameLine();
     ImGui::Spacing();
@@ -462,7 +471,8 @@ void View::DrawStatistics()
     ImGui::AlignTextToFramePadding();
     TextDisabledUnformatted( "Name" );
     ImGui::SameLine();
-    m_statisticsFilter.Draw( ICON_FA_FILTER "###resultFilter", 200 );
+    ImGui::SetNextItemWidth( 200 );
+    m_statisticsFilter.Draw( ICON_FA_FILTER "###resultFilter" );
     ImGui::SameLine();
     if( ImGui::Button( ICON_FA_DELETE_LEFT " Clear" ) )
     {
@@ -477,7 +487,8 @@ void View::DrawStatistics()
         ImGui::SameLine();
         ToggleButton( ICON_FA_SCISSORS, m_shortImageNames );
         ImGui::SameLine();
-        m_statisticsImageFilter.Draw( ICON_FA_FILTER "###imageFilter", 200 );
+        ImGui::SetNextItemWidth( 200 );
+        m_statisticsImageFilter.Draw( ICON_FA_FILTER "###imageFilter" );
         ImGui::SameLine();
         if( ImGui::BeginCombo( "###imageCombo", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_HeightLarge ) )
         {
@@ -721,7 +732,7 @@ void View::DrawStatistics()
                     auto name = m_worker.GetString( srcloc.name.active ? srcloc.name : srcloc.function );
                     SmallColorBox( GetSrcLocColor( srcloc, 0 ) );
                     ImGui::SameLine();
-                    if( m_statMode == 0 )
+                    if( m_statMode == 0 || m_statMode == 2 )
                     {
                         if( ImGui::Selectable( name, m_findZone.show && !m_findZone.match.empty() && m_findZone.match[m_findZone.selMatch] == v.srcloc, ImGuiSelectableFlags_SpanAllColumns ) )
                         {

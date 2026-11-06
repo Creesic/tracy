@@ -212,6 +212,7 @@ void View::DrawCompare()
     m_compareConstraint.Constrain();
     ImGui::Begin( "Compare traces", &m_compare.show, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
     if( ImGui::GetCurrentWindowRead()->SkipItems ) { ImGui::End(); return; }
+    if( s_config.achievements ) Achieve( "compareTraces" );
 #if defined TRACY_NO_FILESELECTOR
     ImGui::TextWrapped( "File selector is disabled in this build." );
     ImGui::TextWrapped( "Rebuild without the TRACY_NO_FILESELECTOR macro to enable trace comparison." );
@@ -244,6 +245,20 @@ void View::DrawCompare()
                             {
                                 m_compare.badVer.state = BadVersionState::UnsupportedVersion;
                                 m_compare.badVer.version = e.version;
+                            }
+                            catch( const tracy::LegacyVersion& e )
+                            {
+                                m_compare.badVer.state = BadVersionState::LegacyVersion;
+                                m_compare.badVer.version = e.version;
+                            }
+                            catch( const tracy::LoadFailure& e )
+                            {
+                                m_compare.badVer.state = BadVersionState::LoadFailure;
+                                m_compare.badVer.msg = e.msg;
+                            }
+                            catch( const tracy::FileReadError& )
+                            {
+                                m_compare.badVer.state = BadVersionState::ReadError;
                             }
                         } );
                     }
@@ -730,6 +745,7 @@ void View::DrawCompare()
             {
                 ImGui::Separator();
                 ImGui::TextWrapped( "Both traces must have matches." );
+                ImGui::EndChild();
                 ImGui::End();
                 return;
             }

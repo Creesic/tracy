@@ -49,10 +49,12 @@ struct ViewData
     uint8_t drawCpuUsageGraph = true;
     uint8_t drawSamples = true;
     uint8_t drawSections = true;
+    uint8_t groupSectionsByCategory = false;
     uint8_t dynamicColors = 1;
     uint8_t inheritParentColors = true;
     uint8_t forceColors = false;
     uint8_t ghostZones = true;
+    uint8_t plotsHierarchy = false;
     ShortenName shortenName = ShortenName::NoSpaceAndNormalize;
 
     uint32_t frameTarget = 60;

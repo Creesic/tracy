@@ -301,6 +301,7 @@ void View::DrawZoneInfoWindow()
             }
             if( ImGui::Button( ICON_FA_ALIGN_JUSTIFY " Call stack" ) )
             {
+                if( s_config.achievements ) Achieve( "zoneCallstacks" );
                 m_callstackView = {
                     .id = extra.callstack.Val(),
                     .thread = tid
@@ -1489,6 +1490,19 @@ void View::DrawGpuInfoWindow()
                 ShowZoneInfo( *parent, m_gpuInfoWindowThread );
             }
         }
+        if( m_worker.AreGpuSourceLocationZonesReady() )
+        {
+            const auto sl = ev.SrcLoc();
+            const auto& slz = m_worker.GetGpuZonesForSourceLocation( sl );
+            if( !slz.zones.empty() )
+            {
+                ImGui::SameLine();
+                if( ImGui::Button( ICON_FA_CHART_BAR " Statistics" ) )
+                {
+                    m_findZone.ShowZone( sl, m_worker.GetString( srcloc.name.active ? srcloc.name : srcloc.function ) );
+                }
+            }
+        }
         if( ev.callstack.Val() != 0 )
         {
             ImGui::SameLine();
@@ -1499,6 +1513,7 @@ void View::DrawGpuInfoWindow()
             }
             if( ImGui::Button( ICON_FA_ALIGN_JUSTIFY " Call stack" ) )
             {
+                if( s_config.achievements ) Achieve( "zoneCallstacks" );
                 m_callstackView = {
                     .id = ev.callstack.Val(),
                     .thread = m_gpuInfoWindowThread
@@ -1961,6 +1976,11 @@ void View::DrawGpuInfoChildren( const V& children, int64_t ztime )
 
 void View::ShowZoneInfo( const ZoneEvent& ev )
 {
+    if( s_config.achievements ) Achieve( "inspectZone" );
+    if( s_config.achievements && m_worker.HasZoneExtra( ev ) && m_worker.GetZoneExtra( ev ).text.Active() )
+    {
+        Achieve( "annotateZones" );
+    }
     if( m_zoneInfoWindow && m_zoneInfoWindow != &ev )
     {
         m_zoneInfoStack.push_back( m_zoneInfoWindow );
@@ -1976,6 +1996,7 @@ void View::ShowZoneInfo( const ZoneEvent& ev )
 
 void View::ShowZoneInfo( const GpuEvent& ev, uint64_t thread )
 {
+    if( s_config.achievements ) Achieve( "profileGpu" );
     if( m_gpuInfoWindow && m_gpuInfoWindow != &ev )
     {
         m_gpuInfoStack.push_back( m_gpuInfoWindow );

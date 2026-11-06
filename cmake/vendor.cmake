@@ -35,7 +35,7 @@ else()
     CPMAddPackage(
         NAME capstone
         GITHUB_REPOSITORY capstone-engine/capstone
-        GIT_TAG 6.0.0-Alpha10
+        GIT_TAG 6.0.0-Alpha11
         OPTIONS
             "CAPSTONE_X86_ATT_DISABLE ON"
             "CAPSTONE_ALPHA_SUPPORT OFF"
@@ -130,7 +130,7 @@ if(VENDOR_GUI)
             CPMAddPackage(
                 NAME glfw
                 GITHUB_REPOSITORY glfw/glfw
-                GIT_TAG 3.4
+                GIT_TAG 3.5.1
                 OPTIONS
                     "GLFW_BUILD_EXAMPLES OFF"
                     "GLFW_BUILD_TESTS OFF"
@@ -154,7 +154,7 @@ if(VENDOR_GUI)
         CPMAddPackage(
             NAME freetype
             GITHUB_REPOSITORY freetype/freetype
-            GIT_TAG VER-2-14-3
+            GIT_TAG VER-2-15-0
             OPTIONS
                 "FT_DISABLE_HARFBUZZ ON"
                 "FT_WITH_HARFBUZZ OFF"
@@ -173,7 +173,7 @@ if(VENDOR_GUI)
     CPMAddPackage(
         NAME ImGui
         GITHUB_REPOSITORY ocornut/imgui
-        GIT_TAG v1.92.9b-docking
+        GIT_TAG v1.93.0-docking
         DOWNLOAD_ONLY TRUE
         PATCHES
             "${CMAKE_CURRENT_LIST_DIR}/imgui-emscripten.patch"
@@ -231,7 +231,7 @@ if(VENDOR_GUI)
         CPMAddPackage(
             NAME nfd
             GITHUB_REPOSITORY btzy/nativefiledialog-extended
-            GIT_TAG 3cd252a8f7ca32419b1ca235c2990ba6a0ecba7c
+            GIT_TAG v1.4.1
             EXCLUDE_FROM_ALL TRUE
             PATCHES
                 "${CMAKE_CURRENT_LIST_DIR}/nfd-xdg-foreign-v2.patch"
@@ -246,7 +246,7 @@ if(VENDOR_GUI)
     CPMAddPackage(
         NAME md4c
         GITHUB_REPOSITORY mity/md4c
-        GIT_TAG 65c6c9d72cebd9a731aaa5597414ce04d9ea5de3
+        GIT_TAG 60e8065cfccd5d7ac561115f9a9bfbdf811f5cc9
         OPTIONS
             "BUILD_SHARED_LIBS OFF"
         EXCLUDE_FROM_ALL TRUE
@@ -285,7 +285,7 @@ if(VENDOR_GUI)
         CPMAddPackage(
             NAME usearch
             GITHUB_REPOSITORY unum-cloud/usearch
-            GIT_TAG v2.26.0
+            GIT_TAG v2.26.4
             EXCLUDE_FROM_ALL TRUE
         )
 
@@ -318,7 +318,7 @@ if(VENDOR_GUI)
             CPMAddPackage(
                 NAME libcurl
                 GITHUB_REPOSITORY curl/curl
-                GIT_TAG curl-8_21_0
+                GIT_TAG curl-8_23_0
                 OPTIONS
                     "BUILD_STATIC_LIBS ON"
                     "BUILD_SHARED_LIBS OFF"

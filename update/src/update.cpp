@@ -11,6 +11,7 @@
 #include "../../public/common/TracyVersion.hpp"
 #include "../../server/TracyFileRead.hpp"
 #include "../../server/TracyFileWrite.hpp"
+#include "../../server/TracySafeFileWrite.hpp"
 #include "../../server/TracyPrint.hpp"
 #include "../../server/TracyWorker.hpp"
 #include "../../getopt/getopt.h"
@@ -205,7 +206,7 @@ int main( int argc, char** argv )
             if( resetSymbols ) ResetSymbols( worker );
             if( resolveSymbols ) PatchSymbols( worker, pathSubstitutions, addr2lineToolPath, addr2lineArgs, verboseSymbols );
 
-            auto w = std::unique_ptr<tracy::FileWrite>( tracy::FileWrite::Open( output, clev, zstdLevel, streams ) );
+            auto w = std::unique_ptr<tracy::SafeFileWrite>( tracy::SafeFileWrite::Open( output, clev, zstdLevel, streams ) );
             if( !w )
             {
                 fprintf( stderr, "Cannot open output file!\n" );
@@ -213,8 +214,13 @@ int main( int argc, char** argv )
             }
             printf( "Saving... \r" );
             fflush( stdout );
-            worker.Write( *w, buildDict );
-            w->Finish();
+            worker.Write( w->File(), buildDict );
+            w->File().Finish();
+            if( !w->Commit() )
+            {
+                fprintf( stderr, "Cannot finalize output file!\n" );
+                exit( 1 );
+            }
             const auto t2 = std::chrono::high_resolution_clock::now();
             const auto stats = w->GetCompressionStatistics();
             ratio = 100.f * stats.second / stats.first;
@@ -250,7 +256,7 @@ int main( int argc, char** argv )
     }
     catch( const tracy::FileReadError& e )
     {
-        fprintf( stderr, "The file you are trying to open cannot be mapped to memory.\n" );
+        fprintf( stderr, "The file could not be read or is corrupted.\n" );
         exit( 1 );
     }
     catch( const tracy::LegacyVersion& e )

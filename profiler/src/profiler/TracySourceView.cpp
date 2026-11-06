@@ -631,7 +631,7 @@ void SourceView::Render( Worker& worker, View& view, WindowConstraints& constrai
 void SourceView::RenderSimpleSourceView()
 {
     ImGui::SetNextWindowContentSize( ImVec2( m_srcWidth, 0 ) );
-    ImGui::BeginChild( "##sourceView", ImVec2( 0, 0 ), true, ImGuiWindowFlags_HorizontalScrollbar );
+    ImGui::BeginChild( "##sourceView", ImVec2( 0, 0 ), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar );
     SetFont();
 
     auto& lines = m_source.get();
@@ -991,6 +991,8 @@ void SourceView::RenderSymbolView( Worker& worker, View& view, WindowConstraints
         ImGui::RadioButton( "Assembly", &m_displayMode, DisplayAsm );
     }
 
+    if( s_config.achievements && ( m_displayMode == DisplayAsm || m_displayMode == DisplayMixed ) ) view.Achieve( "readAssembly" );
+
     AddrStatData as;
     if( m_cost == CostType::SampleCount )
     {
@@ -1070,6 +1072,7 @@ void SourceView::RenderSymbolView( Worker& worker, View& view, WindowConstraints
                         {
                             m_cost = CostType::BranchMiss;
                         }
+                        if( s_config.achievements && m_cost != CostType::SampleCount ) view.Achieve( "hwCounters" );
                     }
                     if( (CostType)idx == s_costSeparateAfter ) ImGui::Separator();
                     idx++;
@@ -1213,9 +1216,7 @@ void SourceView::RenderSymbolView( Worker& worker, View& view, WindowConstraints
             for( auto& v : map ) vec.emplace_back( ChildStat { v.first, v.second } );
             pdqsort_branchless( vec.begin(), vec.end(), []( const auto& lhs, const auto& rhs ) { return lhs.count > rhs.count; } );
 
-            ImGuiContext& g = *GImGui;
-            g.NextWindowData.HasFlags |= ImGuiNextWindowDataFlags_HasWindowFlags;
-            g.NextWindowData.WindowFlags = ImGuiWindowFlags_AlwaysVerticalScrollbar;
+            ImGui::SetNextWindowFlags( ImGuiWindowFlags_AlwaysVerticalScrollbar, true );
 
             if( ImGui::BeginTable( "##ccd", 7, ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY ) )
             {
@@ -1731,7 +1732,7 @@ void SourceView::RenderSymbolSourceView( const AddrStatData& as, Worker& worker,
 
     const float bottom = m_srcSampleSelect.empty() ? 0 : ImGui::GetFrameHeight();
     ImGui::SetNextWindowContentSize( ImVec2( m_srcWidth, 0 ) );
-    ImGui::BeginChild( "##sourceView", ImVec2( 0, -bottom ), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar );
+    ImGui::BeginChild( "##sourceView", ImVec2( 0, -bottom ), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar );
     SetFont();
 
     auto& lines = m_source.get();
@@ -2258,7 +2259,7 @@ uint64_t SourceView::RenderSymbolAsmView( const AddrStatData& as, Worker& worker
 
     const float bottom = m_asmSampleSelect.empty() ? 0 : ImGui::GetFrameHeight();
     ImGui::SetNextWindowContentSize( ImVec2( m_asmWidth, 0 ) );
-    ImGui::BeginChild( "##asmView", ImVec2( 0, -bottom ), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar );
+    ImGui::BeginChild( "##asmView", ImVec2( 0, -bottom ), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar );
     SetFont();
 
     int maxAddrLen;
@@ -3005,7 +3006,7 @@ void SourceView::RenderLine( const Tokenizer::Line& line, int lineNum, const Add
     }
     else if( lineNum == m_selectedLine )
     {
-        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF333322 );
+        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF444433 );
     }
 
     bool hasHwData = false;
@@ -3348,11 +3349,11 @@ void SourceView::RenderAsmLine( AsmLine& line, const AddrStat& ipcnt, const Addr
     }
     else if( m_selectedAddresses.find( line.addr ) != m_selectedAddresses.end() )
     {
-        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF333322 );
+        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF444433 );
     }
     if( line.addr == m_highlightAddr )
     {
-        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF222233 );
+        draw->AddRectFilled( wpos + ImVec2( 0, 1 ), wpos + ImVec2( w, ty ), 0xFF333344 );
     }
 
     const auto asmIdx = &line - m_asm.data();

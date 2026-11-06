@@ -161,6 +161,7 @@ public:
             v->signal.notify_one();
         }
         for( auto& v : m_streams ) v->thread.join();
+        fflush( m_file );
         m_streams.clear();
     }
 
